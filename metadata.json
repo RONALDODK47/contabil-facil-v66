@@ -1,0 +1,12 @@
+{
+  "name": "Contábil Fácil",
+  "description": "Sistema de contabilidade e gestão financeira com automação de extratos e fiscal.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

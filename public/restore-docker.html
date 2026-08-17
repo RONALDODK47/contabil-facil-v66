@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Restaurar Dados Docker — Eye Vision</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"Segoe UI",system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:32px;max-width:680px;margin:0 auto;font-size:14px;line-height:1.6}
+h1{color:#38bdf8;font-size:1.3rem;font-weight:700;margin-bottom:6px}
+.sub{color:#94a3b8;font-size:.85rem;margin-bottom:24px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:20px;margin-bottom:16px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #1e293b}
+.row:last-child{border-bottom:none}
+.label{color:#94a3b8;font-size:.82rem}
+.value{color:#f1f5f9;font-weight:600;font-size:.85rem}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.72rem;font-weight:700}
+.green{background:#052e16;color:#4ade80;border:1px solid #16a34a}
+.blue{background:#1e3a5f;color:#60a5fa;border:1px solid #3b82f6}
+.gray{background:#1f2937;color:#9ca3af;border:1px solid #374151}
+button{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:13px 24px;font-size:.95rem;font-weight:600;cursor:pointer;width:100%}
+button:hover:not(:disabled){background:#2563eb}
+button:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.progress{display:none;margin-top:14px}
+.bar-bg{background:#1e293b;border-radius:6px;height:8px;overflow:hidden;margin-top:6px}
+.bar{height:8px;border-radius:6px;background:#3b82f6;width:0;transition:width .3s}
+.log{font-family:monospace;font-size:.72rem;max-height:180px;overflow-y:auto;background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:10px;margin-top:10px;color:#94a3b8}
+.ok{background:#052e16;border:1px solid #16a34a;border-radius:8px;padding:13px;margin-top:14px;color:#4ade80;font-weight:600}
+.err{background:#2c0d0d;border:1px solid #dc2626;border-radius:8px;padding:13px;margin-top:14px;color:#f87171}
+.warn{background:#1c1506;border:1px solid #d97706;border-radius:8px;padding:10px;margin-top:10px;color:#fbbf24;font-size:.82rem}
+</style>
+</head>
+<body>
+
+<h1>🐳 Restaurar Dados do Docker</h1>
+<p class="sub">Os dados são carregados diretamente do PostgreSQL para a memória do app — sem passar pelo localStorage do browser.</p>
+
+<div class="card" id="info-card">
+  <div class="row"><span class="label">Status Docker</span><span class="value" id="st-docker">verificando…</span></div>
+  <div class="row"><span class="label">PostgreSQL</span><span class="value" id="st-pg">—</span></div>
+  <div class="row"><span class="label">Office Token</span><span class="value" id="st-token">—</span></div>
+  <div class="row"><span class="label">Empresas</span><span class="value" id="st-empresas">—</span></div>
+  <div class="row"><span class="label">Managers</span><span class="value" id="st-managers">—</span></div>
+  <div class="row"><span class="label">Pasta de extrato</span><span class="value" id="st-pastas">—</span></div>
+</div>
+
+<div class="card">
+  <button id="btn" onclick="restaurar()" disabled>⏳ Verificando…</button>
+  <div class="progress" id="progress">
+    <p id="progress-label" style="color:#94a3b8;font-size:.8rem">Carregando…</p>
+    <div class="bar-bg"><div class="bar" id="bar"></div></div>
+  </div>
+  <div id="msg"></div>
+  <div class="log" id="log" style="display:none"></div>
+</div>
+
+<div class="warn">
+  ⚠️ <strong>Modo seguro:</strong> os dados são carregados em memória do app (sem localStorage). Não feche o browser depois da restauração — os dados ficam disponíveis enquanto a aba estiver aberta. Para persistir permanentemente salve via <em>Sincronizar → Pasta Local</em>.
+</div>
+
+<script>
+var payload = null;
+
+function log(msg, color) {
+  var el = document.getElementById('log');
+  el.style.display = 'block';
+  var span = document.createElement('span');
+  span.style.color = color || '#94a3b8';
+  span.innerHTML = msg + '<br>';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+function setBar(pct) {
+  document.getElementById('bar').style.width = pct + '%';
+  document.getElementById('progress').style.display = 'block';
+}
+function setText(id, html) { document.getElementById(id).innerHTML = html; }
+
+async function verificar() {
+  try {
+    // 1. health geral
+    const h = await fetch('/api/agent/workspace/health').then(r => r.json()).catch(() => ({}));
+    setText('st-docker', h.postgres?.ok
+      ? '<span class="badge green">✓ Online</span>'
+      : '<span class="badge gray">Offline</span>');
+    setText('st-pg', h.postgres?.ok
+      ? '<span class="badge green">✓ Conectado</span>'
+      : '<span class="badge gray">' + (h.postgres?.detail || 'Sem conexão') + '</span>');
+
+    if (!h.postgres?.ok) {
+      setText('st-token', '—');
+      document.getElementById('btn').textContent = '❌ Docker offline — inicie os containers';
+      return;
+    }
+
+    // 2. pré-carrega o payload (sem PDFs)
+    setBar(20);
+    document.getElementById('btn').textContent = '⏳ Carregando dados…';
+    const r = await fetch('/api/agent/storage/restore-from-docker-direct');
+    const data = await r.json();
+    if (!data.ok || !data.office) {
+      setText('st-token', '<span class="badge gray">Nenhum dado</span>');
+      document.getElementById('btn').textContent = '❌ Nenhum dado encontrado no Docker';
+      return;
+    }
+    payload = data;
+
+    const nc = Array.isArray(data.office.companies_registry) ? data.office.companies_registry.length : 0;
+    const nm = Array.isArray(data.managers) ? data.managers.length : 0;
+    const ep = data.extratoPastas ? Object.keys(data.extratoPastas).length : 0;
+
+    setText('st-token', '<span class="badge blue">' + data.officeToken + '</span>');
+    setText('st-empresas', '<strong>' + nc + '</strong> empresas');
+    setText('st-managers', nm + ' registros');
+    setText('st-pastas', ep + ' slugs com pasta');
+
+    setBar(100);
+    var btn = document.getElementById('btn');
+    btn.disabled = false;
+    btn.textContent = '▶ RESTAURAR AGORA (' + nc + ' empresas)';
+  } catch(e) {
+    setText('st-docker', '<span class="badge gray">Erro: ' + e.message + '</span>');
+    document.getElementById('btn').textContent = '❌ Erro ao conectar';
+  }
+}
+
+function slug(name) {
+  return (name || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48);
+}
+
+/* Tamanho estimado em bytes de um valor JSON */
+function byteSize(v) {
+  try { return new Blob([JSON.stringify(v)]).size; } catch { return 0; }
+}
+
+/* Limite conservador: 4 MB para uma única chave no localStorage */
+var LS_KEY_LIMIT = 4 * 1024 * 1024;
+
+/* Injeta no memoryFallback via evento que o app escuta */
+function injetarViaEvento(office, managers, extratoPastas) {
+  window.dispatchEvent(new CustomEvent('contabilfacil:docker-hydrate', {
+    detail: { office: office, managers: managers, extratoPastas: extratoPastas || {} }
+  }));
+}
+
+function restaurar() {
+  if (!payload) { alert('Dados não carregados. Aguarde.'); return; }
+  var btn = document.getElementById('btn');
+  btn.disabled = true;
+  btn.textContent = 'Restaurando…';
+  document.getElementById('msg').innerHTML = '';
+
+  try {
+    var office   = payload.office   || {};
+    var managers = payload.managers || [];
+    var extratoPastas = payload.extratoPastas || {};
+    var token    = payload.officeToken || 'INOV';
+
+    /* ── 1. Chaves leves — sempre no localStorage (registry, selected, token) ── */
+    var lsItems = {};
+    if (office.companies_registry)
+      lsItems['contabilfacil_companies_registry_v1'] = JSON.stringify(office.companies_registry);
+    if (office.selected_company)
+      lsItems['contabilfacil_selected_company_v1'] = office.selected_company;
+    if (office.pricing_companies_registry)
+      lsItems['contabilfacil_pricing_companies_registry_v1'] = JSON.stringify(office.pricing_companies_registry);
+    if (office.pricing_selected_company)
+      lsItems['contabilfacil_pricing_selected_company_v1'] = office.pricing_selected_company;
+    lsItems['gc_company_access_token'] = token;
+
+    /* simulador — leve, cabe em LS */
+    ['simulador_contracts','simulador_parcelamentos','simulador_aplicacoes'].forEach(function(k) {
+      if (Array.isArray(office[k]) && office[k].length > 0)
+        lsItems[k] = JSON.stringify(office[k]);
+    });
+    if (Array.isArray(office.simulador_precificacao) && office.simulador_precificacao.length > 0)
+      lsItems['simulador_precificacao_v1'] = JSON.stringify(office.simulador_precificacao);
+
+    /* extra_storage leve */
+    var extra = office.extra_storage || {};
+    Object.entries(extra).forEach(function(kv) {
+      var v = kv[1];
+      if (v == null) return;
+      var s = typeof v === 'string' ? v : JSON.stringify(v);
+      if (s.length < 200000) lsItems[kv[0]] = s; // < 200 KB → LS
+    });
+
+    var lsOk = 0, lsSkip = 0;
+    Object.entries(lsItems).forEach(function(kv) {
+      try { localStorage.setItem(kv[0], kv[1]); lsOk++; }
+      catch(e) { lsSkip++; log('⚠ LS skip ' + kv[0] + ': ' + e.message, '#fbbf24'); }
+    });
+    log('✓ localStorage: ' + lsOk + ' chaves leves gravadas' + (lsSkip ? ' (' + lsSkip + ' puladas)' : ''), '#4ade80');
+
+    /* ── 2. Managers pesados → evento para o app (memoryFallback) ── */
+    var managerCount = 0;
+    managers.forEach(function(m) {
+      var s = m.company_slug || '';
+      if (!s) return;
+      var data = m.data || {};
+      Object.entries(data).forEach(function(kv) {
+        if (!Array.isArray(kv[1]) || kv[1].length === 0) return;
+        managerCount++;
+      });
+    });
+    log('→ ' + managerCount + ' chaves de manager serão carregadas via evento (sem LS)', '#60a5fa');
+
+    /* ── 3. Despacha evento para o app React ── */
+    injetarViaEvento(office, managers, extratoPastas);
+    log('✓ Evento contabilfacil:docker-hydrate disparado', '#4ade80');
+
+    setBar(100);
+    document.getElementById('msg').innerHTML =
+      '<div class="ok">✅ Restauração concluída!<br>' +
+      'Redirecionando para o app em 2 segundos…</div>';
+
+    setTimeout(function() {
+      window.location.href = '/';
+    }, 2000);
+
+  } catch(e) {
+    document.getElementById('msg').innerHTML =
+      '<div class="err">❌ Erro: ' + e.message + '</div>';
+    btn.disabled = false;
+    btn.textContent = '▶ RESTAURAR AGORA';
+  }
+}
+
+verificar();
+</script>
+</body>
+</html>

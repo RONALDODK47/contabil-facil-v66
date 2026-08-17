@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.data/
+*.log
+.idea/
+vendor/
+firebase-service-account.json
+
+# Dados reais de cliente que acabaram indo parar na raiz do projeto — não são código do software
+sped.txt
+*.pdf
+.watch-interface.lock
+
+# Binários gerados por `npm run instalador` — o release vive no GitHub Releases
+installer/output/
+installer/ContabilFacil.exe

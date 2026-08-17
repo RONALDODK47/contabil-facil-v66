@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Novo Layout Extrato BB v2026 - Referência Visual</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #0066cc 0%, #004499 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 8px 8px 0 0;
+            margin-bottom: 0;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .content {
+            background: white;
+            padding: 30px;
+            border-radius: 0 0 8px 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #0066cc;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #0066cc;
+            padding-bottom: 10px;
+        }
+
+        .extrato-preview {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin: 20px 0;
+        }
+
+        .extrato-header {
+            background: linear-gradient(90deg, #1e3a8a 0%, #2563eb 100%);
+            color: white;
+            padding: 15px;
+            font-weight: bold;
+        }
+
+        .extrato-subheader {
+            background: #e0e7ff;
+            color: #1e3a8a;
+            padding: 10px 15px;
+            border-bottom: 1px solid #bfdbfe;
+            font-weight: 600;
+        }
+
+        .extrato-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .extrato-table th {
+            background: #f3f4f6;
+            border-bottom: 2px solid #d1d5db;
+            padding: 10px;
+            text-align: left;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .extrato-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .extrato-table tr:hover {
+            background: #fafafa;
+        }
+
+        .credito {
+            color: #059669;
+            font-weight: 600;
+        }
+
+        .debito {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .masked {
+            background: #e0e0e0;
+            color: #666;
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-style: italic;
+        }
+
+        .column-explanation {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .column-card {
+            background: #f0f9ff;
+            border-left: 4px solid #0066cc;
+            padding: 15px;
+            border-radius: 4px;
+        }
+
+        .column-card h4 {
+            color: #0066cc;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .column-card code {
+            background: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+        }
+
+        .example-group {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+
+        .example-group h5 {
+            color: #059669;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+
+        .example-line {
+            background: white;
+            padding: 8px;
+            margin: 5px 0;
+            border-left: 3px solid #059669;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            overflow-x: auto;
+            word-break: break-all;
+        }
+
+        .parser-status {
+            background: linear-gradient(90deg, #dcfce7 0%, #d1fae5 100%);
+            border: 1px solid #6ee7b7;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+
+        .parser-status strong {
+            color: #065f46;
+        }
+
+        .code-snippet {
+            background: #1f2937;
+            color: #e5e7eb;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .code-snippet .keyword {
+            color: #fbbf24;
+        }
+
+        .code-snippet .string {
+            color: #86efac;
+        }
+
+        .code-snippet .number {
+            color: #f87171;
+        }
+
+        .feature-list {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .feature-list li {
+            padding: 8px 0;
+            padding-left: 25px;
+            position: relative;
+        }
+
+        .feature-list li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #059669;
+            font-weight: bold;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #666;
+            font-size: 12px;
+        }
+
+        @media (max-width: 768px) {
+            .extrato-table {
+                font-size: 10px;
+            }
+
+            .extrato-table td, .extrato-table th {
+                padding: 5px;
+            }
+
+            .header h1 {
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏦 Novo Layout Extrato Banco do Brasil v2026</h1>
+            <p>Documentação de Referência Visual e Técnica</p>
+        </div>
+
+        <div class="content">
+            <!-- Visão Geral -->
+            <div class="section">
+                <h2 class="section-title">📋 Visão Geral</h2>
+                <p style="margin-bottom: 15px;">
+                    O Banco do Brasil atualizou o layout de seus extratos a partir de 2026. 
+                    O novo formato apresenta uma tabela estruturada com colunas bem definidas, 
+                    facilitando a leitura por humanos e máquinas.
+                </p>
+
+                <div class="parser-status">
+                    <strong>✓ Status do Parser:</strong> Implementado e testado com 10/10 testes passando
+                </div>
+            </div>
+
+            <!-- Estrutura Tabular -->
+            <div class="section">
+                <h2 class="section-title">📊 Estrutura Tabular</h2>
+                <p style="margin-bottom: 15px;">
+                    O layout é organizado em 5 colunas principais:
+                </p>
+
+                <div class="column-explanation">
+                    <div class="column-card">
+                        <h4>Dia</h4>
+                        <p>Data da operação no formato <code>DD/MM/YYYY</code></p>
+                        <p><small>Ex: 04/05/2026</small></p>
+                    </div>
+
+                    <div class="column-card">
+                        <h4>Lote</h4>
+                        <p>Identificador do lote (4-5 dígitos numéricos)</p>
+                        <p><small>Ex: 14397, 13105</small></p>
+                    </div>
+
+                    <div class="column-card">
+                        <h4>Documento</h4>
+                        <p>ID único da transação (12+ dígitos)</p>
+                        <p><small>Ex: 10903125172831</small></p>
+                    </div>
+
+                    <div class="column-card">
+                        <h4>Histórico</h4>
+                        <p>Descrição completa com data/hora, CPF/CNPJ e nome</p>
+                        <p><small>Ex: Pix - Recebido 01/05 09:03 55802389168 JOSE ANTONIO</small></p>
+                    </div>
+
+                    <div class="column-card">
+                        <h4>Valor</h4>
+                        <p>Montante com tipo (<code>(+)</code> crédito ou <code>(-)</code> débito)</p>
+                        <p><small>Ex: 500,00 (+) ou 2.458,92 (-)</small></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Exemplo Visual -->
+            <div class="section">
+                <h2 class="section-title">👁️ Exemplo Visual do Layout</h2>
+                <div class="extrato-preview">
+                    <div class="extrato-header">
+                        Extrato de Conta Corrente
+                    </div>
+                    <div class="extrato-subheader">
+                        Cliente: COMERCIAL FERNANDES LTDA | Agência: 43-4 | Conta: 20027-1
+                    </div>
+                    <table class="extrato-table">
+                        <thead>
+                            <tr>
+                                <th>Dia</th>
+                                <th>Lote</th>
+                                <th>Documento</th>
+                                <th>Histórico</th>
+                                <th>Valor</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>04/05/2026</td>
+                                <td>14397</td>
+                                <td>10903125172831</td>
+                                <td>Pix - Recebido 01/05 09:03 55802389168 JOSE ANTONIO D</td>
+                                <td class="credito">500,00 (+)</td>
+                            </tr>
+                            <tr>
+                                <td>04/05/2026</td>
+                                <td>14397</td>
+                                <td>11106073834502</td>
+                                <td>Pix - Recebido 01/05 11:06 00000076832198 MARIA JOSE</td>
+                                <td class="credito">183,00 (+)</td>
+                            </tr>
+                            <tr>
+                                <td>04/05/2026</td>
+                                <td>13105</td>
+                                <td>50401</td>
+                                <td>Pagamento de Boleto GUABI NUTRICAO S ANIMAL LTDA</td>
+                                <td class="debito">2.458,92 (-)</td>
+                            </tr>
+                            <tr>
+                                <td>04/05/2026</td>
+                                <td>13128</td>
+                                <td>4311471000121</td>
+                                <td>FCO Liberação</td>
+                                <td class="debito">12.251,95 (-)</td>
+                            </tr>
+                            <tr>
+                                <td>04/05/2026</td>
+                                <td>9903</td>
+                                <td>-</td>
+                                <td>BB Rende Fácil Rende Facil</td>
+                                <td class="credito">11.986,29 (+)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Exemplos de Tipos de Transação -->
+            <div class="section">
+                <h2 class="section-title">💳 Tipos de Transações</h2>
+
+                <div class="example-group">
+                    <h5>📥 Pix Recebido (Crédito)</h5>
+                    <div class="example-line">
+                        04/05/2026  14397  10903125172831  Pix - Recebido 01/05 09:03 55802389168 JOSE ANTONIO D  500,00 (+)
+                    </div>
+                </div>
+
+                <div class="example-group">
+                    <h5>📤 Pix Enviado (Débito)</h5>
+                    <div class="example-line">
+                        27/05/2026  13105  52701  Pix - Enviado 27/05 08:01 GABRIEL NOVAIS MENDES  50,00 (-)
+                    </div>
+                </div>
+
+                <div class="example-group">
+                    <h5>🧾 Pagamento de Boleto (Débito)</h5>
+                    <div class="example-line">
+                        04/05/2026  13105  50401  Pagamento de Boleto GUABI NUTRICAO S ANIMAL LTDA  2.458,92 (-)
+                    </div>
+                </div>
+
+                <div class="example-group">
+                    <h5>💰 Rendimento (Crédito)</h5>
+                    <div class="example-line">
+                        04/05/2026  9903  -  BB Rende Fácil Rende Facil  11.986,29 (+)
+                    </div>
+                </div>
+
+                <div class="example-group">
+                    <h5>🏦 Financiamento (Débito)</h5>
+                    <div class="example-line">
+                        04/05/2026  13128  4311471000121  FCO Liberação  12.251,95 (-)
+                    </div>
+                </div>
+
+                <div class="example-group">
+                    <h5>📊 Tarifa de Serviço (Débito)</h5>
+                    <div class="example-line">
+                        06/05/2026  13113  831261103255558  Tarifa Pacote de Serviços Cobrança referente 06/05/2026  93,10 (-)
+                    </div>
+                </div>
+
+                <div class="example-group">
+                    <h5>🏛️ Pagamento de Impostos (Débito)</h5>
+                    <div class="example-line">
+                        11/05/2026  13105  51101  Pagamento de Impostos DARE - COD BARRAS  855,98 (-)
+                    </div>
+                </div>
+            </div>
+
+            <!-- API do Parser -->
+            <div class="section">
+                <h2 class="section-title">⚙️ API do Parser TypeScript</h2>
+
+                <h3 style="color: #0066cc; margin-top: 20px; margin-bottom: 10px; font-size: 16px;">
+                    Função: parseBbExtratoV2026Line()
+                </h3>
+                <p style="margin-bottom: 10px;">
+                    Faz parse de uma única linha de transação.
+                </p>
+
+                <div class="code-snippet">
+<span class="keyword">import</span> { parseBbExtratoV2026Line } <span class="keyword">from</span> <span class="string">'./bbExtratoV2026Parser'</span>;
+
+<span class="keyword">const</span> line = <span class="string">'04/05/2026  14397  10903125172831  Pix - Recebido 01/05 09:03 55802389168 JOSE ANTONIO D  500,00 (+)'</span>;
+<span class="keyword">const</span> result = parseBbExtratoV2026Line(line);
+
+<span class="keyword">if</span> (result) {
+  console.log(result.data);      <span class="comment">// "04/05/2026"</span>
+  console.log(result.valor);     <span class="comment">// 50000 (em centavos)</span>
+  console.log(result.tipo);      <span class="comment">// "credito"</span>
+  console.log(result.historico); <span class="comment">// "Pix - Recebido..."</span>
+}
+                </div>
+
+                <h3 style="color: #0066cc; margin-top: 20px; margin-bottom: 10px; font-size: 16px;">
+                    Função: parseBbExtratoV2026Text()
+                </h3>
+                <p style="margin-bottom: 10px;">
+                    Faz parse de múltiplas linhas.
+                </p>
+
+                <div class="code-snippet">
+<span class="keyword">import</span> { parseBbExtratoV2026Text } <span class="keyword">from</span> <span class="string">'./bbExtratoV2026Parser'</span>;
+
+<span class="keyword">const</span> text = <span class="string">`
+04/05/2026  14397  10903125172831  Pix - Recebido 01/05 09:03 55802389168 JOSE ANTONIO D  500,00 (+)
+04/05/2026  13105  50401  Pagamento de Boleto GUABI NUTRICAO S ANIMAL LTDA  2.458,92 (-)
+`</span>;
+
+<span class="keyword">const</span> rows = parseBbExtratoV2026Text(text);
+rows.forEach(row => {
+  console.log(<span class="string">`${row.data} - R$ ${(row.valor / 100).toFixed(2)}`</span>);
+});
+                </div>
+            </div>
+
+            <!-- Mascaramento de Dados -->
+            <div class="section">
+                <h2 class="section-title">🛡️ Mascaramento de Dados Sensíveis</h2>
+                <p style="margin-bottom: 15px;">
+                    Para proteger informações confidenciais, dois scripts de mascaramento foram fornecidos:
+                </p>
+
+                <ul class="feature-list">
+                    <li><strong>Python:</strong> <code>scripts/mask-bb-extrato-pdf.py</code></li>
+                    <li><strong>Node.js:</strong> <code>scripts/mask-bb-extrato-pdf.mjs</code></li>
+                </ul>
+
+                <h4 style="margin-top: 20px; margin-bottom: 10px; color: #0066cc;">
+                    Uso do Script Python:
+                </h4>
+                <div class="code-snippet">
+python scripts/mask-bb-extrato-pdf.py extrato.pdf extrato-mascarado.pdf
+                </div>
+
+                <h4 style="margin-top: 15px; margin-bottom: 10px; color: #0066cc;">
+                    Uso do Script Node.js:
+                </h4>
+                <div class="code-snippet">
+node scripts/mask-bb-extrato-pdf.mjs extrato.pdf extrato-mascarado.pdf
+                </div>
+
+                <p style="margin-top: 15px; background: #fef3c7; padding: 10px; border-radius: 4px; border-left: 4px solid #f59e0b;">
+                    ℹ️ <strong>Nota:</strong> O mascaramento cobre:
+                    <ul style="margin-top: 5px; margin-left: 20px;">
+                        <li>Informações de cliente (cabeçalho)</li>
+                        <li>Linhas de transação (dados sensíveis)</li>
+                        <li>Saldos e totalizadores (rodapé)</li>
+                    </ul>
+                </p>
+            </div>
+
+            <!-- Recursos Implementados -->
+            <div class="section">
+                <h2 class="section-title">✨ Recursos Implementados</h2>
+
+                <ul class="feature-list">
+                    <li>Parser completo do novo layout v2026</li>
+                    <li>Detecção automática de tipo de transação (crédito/débito)</li>
+                    <li>Parsing de valores em formato brasileiro (DD.DDD,CC)</li>
+                    <li>Extração de data, lote, documento e histórico</li>
+                    <li>Suite de testes com 10 casos de teste</li>
+                    <li>Conversão para formato compatível com sistema legado</li>
+                    <li>Script de mascaramento em Python e Node.js</li>
+                </ul>
+            </div>
+
+            <!-- Próximas Etapas -->
+            <div class="section">
+                <h2 class="section-title">🚀 Próximas Etapas</h2>
+
+                <ul class="feature-list">
+                    <li>Integração com AI Vision para detecção automática de layout</li>
+                    <li>Normalização de históricos para identificação de contrapartida</li>
+                    <li>Integração com regras de contas contábeis</li>
+                    <li>Suporte a OCR melhorado (coordenadas X/Y)</li>
+                    <li>API REST para upload e processamento de extratos</li>
+                </ul>
+            </div>
+
+            <!-- Documentação -->
+            <div class="section">
+                <h2 class="section-title">📚 Documentação</h2>
+
+                <p style="margin-bottom: 15px;">
+                    Para mais detalhes técnicos, consulte:
+                </p>
+
+                <ul class="feature-list">
+                    <li><strong>Parser TypeScript:</strong> <code>src/extratoVision/utils/bbExtratoV2026Parser.ts</code></li>
+                    <li><strong>Testes:</strong> <code>src/extratoVision/utils/__tests__/bbExtratoV2026Parser.test.ts</code></li>
+                    <li><strong>README completo:</strong> <code>BB_V2026_PARSER_README.md</code></li>
+                </ul>
+            </div>
+
+            <div class="footer">
+                <p>Banco do Brasil - Layout v2026 | Parser implementado em TypeScript + Vitest</p>
+                <p style="margin-top: 10px; color: #999;">Última atualização: Agosto 2026</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

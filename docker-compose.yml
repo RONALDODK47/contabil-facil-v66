@@ -1,0 +1,99 @@
+# Eye Vision — PostgreSQL + MinIO (persistência segura)
+#
+# Produção / servidor: só rede interna (sem portas públicas do banco).
+#   docker compose up -d
+#
+# Desenvolvimento local (app no host): use também docker-compose.dev.yml
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Dados na máquina host (bind mount explícito): opcional docker-compose.bind.yml
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.bind.yml up -d
+#
+# NUNCA use `docker commit` para guardar dados — use volumes (abaixo).
+# NUNCA use `docker compose down -v` em produção (apaga os volumes).
+
+name: eye-vision-storage
+
+networks:
+  eye_vision_internal:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eye-vision-postgres
+    restart: unless-stopped
+    networks:
+      - eye_vision_internal
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eye}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no arquivo .env}
+      POSTGRES_DB: ${POSTGRES_DB:-eye_vision}
+    volumes:
+      - eye_vision_pg_data:/var/lib/postgresql/data
+    expose:
+      - '5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Imagem oficial já roda como usuário não-root `postgres` (UID 70).
+
+  minio:
+    image: minio/minio:latest
+    container_name: eye-vision-minio
+    restart: unless-stopped
+    networks:
+      - eye_vision_internal
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-eyevision}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Defina MINIO_ROOT_PASSWORD no arquivo .env}
+    command: server /data --console-address ":9001"
+    volumes:
+      - eye_vision_minio_data:/data
+    expose:
+      - '9000'
+      - '9001'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: eye-vision-minio-init
+    networks:
+      - eye_vision_internal
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-eyevision}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Defina MINIO_ROOT_PASSWORD no arquivo .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-eye-vision}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\";
+      mc mb -p local/$$MINIO_BUCKET || true;
+      exit 0;
+      "
+    restart: 'no'
+
+volumes:
+  eye_vision_pg_data:
+    name: eye-vision-software-leve_eye_vision_pg_data
+    external: true
+  eye_vision_minio_data:
+    name: eye-vision-software-leve_eye_vision_minio_data
+    external: true

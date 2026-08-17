@@ -1,0 +1,40 @@
+{
+  "versao": "2026.05",
+  "atualizadoEm": "2026-05-31",
+  "fontes": [
+    "Resolução do Senado Federal nº 13/2012 (alíquotas interestaduais 4%, 7% e 12%)",
+    "Convênio ICMS nº 235/2021 — Portal Nacional da DIFAL (SEFAZ Virtual RS / SVRS)",
+    "Alíquotas internas por UF — referência CONFAZ / legislação estadual (2025–2026)"
+  ],
+  "portalDifalUrl": "https://dfe-portal.svrs.rs.gov.br/difal",
+  "confazUrl": "https://www.confaz.fazenda.gov.br/",
+  "ufs": [
+    { "uf": "AC", "nome": "Acre", "regiao": "NORTE", "aliquotaInterna": 19 },
+    { "uf": "AL", "nome": "Alagoas", "regiao": "NORDESTE", "aliquotaInterna": 20.5 },
+    { "uf": "AP", "nome": "Amapá", "regiao": "NORTE", "aliquotaInterna": 18 },
+    { "uf": "AM", "nome": "Amazonas", "regiao": "NORTE", "aliquotaInterna": 20 },
+    { "uf": "BA", "nome": "Bahia", "regiao": "NORDESTE", "aliquotaInterna": 20.5 },
+    { "uf": "CE", "nome": "Ceará", "regiao": "NORDESTE", "aliquotaInterna": 20 },
+    { "uf": "DF", "nome": "Distrito Federal", "regiao": "CENTRO-OESTE", "aliquotaInterna": 20 },
+    { "uf": "ES", "nome": "Espírito Santo", "regiao": "SUDESTE", "aliquotaInterna": 17 },
+    { "uf": "GO", "nome": "Goiás", "regiao": "CENTRO-OESTE", "aliquotaInterna": 19 },
+    { "uf": "MA", "nome": "Maranhão", "regiao": "NORDESTE", "aliquotaInterna": 23 },
+    { "uf": "MT", "nome": "Mato Grosso", "regiao": "CENTRO-OESTE", "aliquotaInterna": 17 },
+    { "uf": "MS", "nome": "Mato Grosso do Sul", "regiao": "CENTRO-OESTE", "aliquotaInterna": 17 },
+    { "uf": "MG", "nome": "Minas Gerais", "regiao": "SUDESTE", "aliquotaInterna": 18 },
+    { "uf": "PA", "nome": "Pará", "regiao": "NORTE", "aliquotaInterna": 19 },
+    { "uf": "PB", "nome": "Paraíba", "regiao": "NORDESTE", "aliquotaInterna": 20 },
+    { "uf": "PR", "nome": "Paraná", "regiao": "SUL", "aliquotaInterna": 19.5 },
+    { "uf": "PE", "nome": "Pernambuco", "regiao": "NORDESTE", "aliquotaInterna": 20.5 },
+    { "uf": "PI", "nome": "Piauí", "regiao": "NORDESTE", "aliquotaInterna": 22.5 },
+    { "uf": "RJ", "nome": "Rio de Janeiro", "regiao": "SUDESTE", "aliquotaInterna": 20 },
+    { "uf": "RN", "nome": "Rio Grande do Norte", "regiao": "NORDESTE", "aliquotaInterna": 20 },
+    { "uf": "RS", "nome": "Rio Grande do Sul", "regiao": "SUL", "aliquotaInterna": 17 },
+    { "uf": "RO", "nome": "Rondônia", "regiao": "NORTE", "aliquotaInterna": 19.5 },
+    { "uf": "RR", "nome": "Roraima", "regiao": "NORTE", "aliquotaInterna": 20 },
+    { "uf": "SC", "nome": "Santa Catarina", "regiao": "SUL", "aliquotaInterna": 17 },
+    { "uf": "SP", "nome": "São Paulo", "regiao": "SUDESTE", "aliquotaInterna": 18 },
+    { "uf": "SE", "nome": "Sergipe", "regiao": "NORDESTE", "aliquotaInterna": 19 },
+    { "uf": "TO", "nome": "Tocantins", "regiao": "NORTE", "aliquotaInterna": 20 }
+  ]
+}

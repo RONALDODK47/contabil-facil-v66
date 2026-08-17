@@ -1,0 +1,7 @@
+# Netlify / hospedagem estática
+
+# Proxy BCB (evita CORS no browser)
+/api/bcb/*  https://api.bcb.gov.br/:splat  200
+
+# SPA — deep links
+/*  /index.html  200

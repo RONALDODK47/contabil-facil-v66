@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InfinitePay - Relatório de Movimentações</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .report {
+            background: white;
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 15px;
+        }
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            color: #000;
+        }
+        .period {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .section {
+            margin-bottom: 20px;
+        }
+        .section-title {
+            background: #f0f0f0;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: bold;
+            border: 1px solid #ddd;
+            text-transform: uppercase;
+        }
+        .transaction {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+            font-size: 11px;
+            font-family: monospace;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .transaction:hover {
+            background: #f9f9f9;
+        }
+        .date {
+            color: #666;
+            min-width: 80px;
+        }
+        .desc {
+            flex: 1;
+            margin: 0 10px;
+            color: #333;
+        }
+        .amount {
+            font-weight: bold;
+            text-align: right;
+            min-width: 100px;
+        }
+        .credit {
+            color: #28a745;
+        }
+        .debit {
+            color: #dc3545;
+        }
+        .totals {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .total-box {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: center;
+            font-size: 11px;
+        }
+        .total-label {
+            font-weight: bold;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .total-value {
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .footer {
+            font-size: 10px;
+            color: #999;
+            text-align: center;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+    </style>
+</head>
+<body>
+    <div class="report">
+        <div class="header">
+            <div class="logo">⚪ InfinitePay</div>
+            <div class="period">Relatório de Movimentações - 01 Mai, 2026 - 31 Mai, 2026</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Transações</div>
+            <div class="transaction">
+                <span class="date">01 Mai</span>
+                <span class="desc">Pix Paulo Henrique Souza Lima</span>
+                <span class="amount debit">-R$ 100,00</span>
+            </div>
+            <div class="transaction">
+                <span class="date">04 Mai</span>
+                <span class="desc">Depósito de vendas (InfinitePay)</span>
+                <span class="amount credit">+R$ 5.200,58</span>
+            </div>
+            <div class="transaction">
+                <span class="date">04 Mai</span>
+                <span class="desc">Pix ADEMIR SANTOS DA SILVA</span>
+                <span class="amount credit">+R$ 4.500,00</span>
+            </div>
+            <div class="transaction">
+                <span class="date">04 Mai</span>
+                <span class="desc">Pix FACEBOOK SERVICOS ONLINE</span>
+                <span class="amount debit">-R$ 2.043,81</span>
+            </div>
+            <div class="transaction">
+                <span class="date">05 Mai</span>
+                <span class="desc">Depósito de vendas (InfinitePay)</span>
+                <span class="amount credit">+R$ 500,01</span>
+            </div>
+            <div class="transaction">
+                <span class="date">05 Mai</span>
+                <span class="desc">Pix NM SERVICOS ADMINISTRATIVOS</span>
+                <span class="amount debit">-R$ 6.000,00</span>
+            </div>
+        </div>
+
+        <div class="totals">
+            <div class="total-box">
+                <div class="total-label">Créditos</div>
+                <div class="total-value credit">+R$ 10.200,59</div>
+            </div>
+            <div class="total-box">
+                <div class="total-label">Débitos</div>
+                <div class="total-value debit">-R$ 8.143,81</div>
+            </div>
+            <div class="total-box">
+                <div class="total-label">Saldo</div>
+                <div class="total-value">R$ 2.056,78</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            Relatório gerado automaticamente pela InfinitePay (Cloudwalk)<br>
+            Conta: 0001 - 16455473-6
+        </div>
+    </div>
+</body>
+</html>

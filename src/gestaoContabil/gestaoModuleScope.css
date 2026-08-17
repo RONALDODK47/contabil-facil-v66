@@ -1,0 +1,130 @@
+/* Escopo do embed Gestão Empresarial dentro do Eye Vision */
+html.gestao-embed-active {
+  /* páginas @gestao no embed usam tema claro */
+}
+
+.gestao-embed-root {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  background: var(--brand-bg, #f4f0ea);
+  color: var(--brand-text, #141414);
+  --radius: 0;
+}
+
+.gestao-embed-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.gestao-embed-main.gestao-embed-force-light {
+  background: #fff;
+}
+
+.gestao-embed-root .gestao-embed-force-light {
+  color-scheme: light;
+  --radius: 0;
+  --color-brand-border: #141414;
+}
+
+/**
+ * Eye Vision: bordas quadradas e uniformes em todo o Gestão Contábil (shadcn usa rounded-md).
+ */
+.gestao-embed-root .gestao-embed-force-light,
+.gestao-embed-root .gestao-embed-force-light * {
+  border-radius: 0 !important;
+}
+
+.gestao-embed-root .gestao-embed-force-light :where(
+  button,
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea,
+  [role='combobox'],
+  [role='dialog'],
+  [data-radix-select-trigger],
+  [data-radix-popover-trigger],
+  [class*='border']
+) {
+  border-color: var(--color-brand-border, #141414);
+}
+
+.gestao-embed-root .gestao-embed-force-light :where(
+  [class*='shadow'],
+  .shadow,
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg
+) {
+  box-shadow: none !important;
+}
+
+.gestao-embed-root .gestao-embed-force-light :where(
+  [class*='border-gray'],
+  [class*='border-slate']
+) {
+  border-color: var(--color-brand-border, #141414) !important;
+}
+
+.gestao-embed-root .gestao-embed-force-light :where(
+  button,
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea,
+  [role='combobox'],
+  [data-radix-select-trigger]
+) {
+  border-width: 1px;
+  border-style: solid;
+}
+
+/* Recharts: ResponsiveContainer precisa de altura explícita no embed */
+.gestao-embed-root .recharts-responsive-container {
+  width: 100% !important;
+  min-height: 260px;
+  height: 100% !important;
+}
+
+.gestao-embed-root .h-\[22rem\] {
+  min-height: 22rem;
+}
+
+.gestao-embed-root .h-80 {
+  min-height: 20rem;
+}
+
+/* Recados: tamanho fixo + rolagem interna */
+.gestao-embed-root .gestao-notice-card-fixed {
+  height: 20rem;
+  min-height: 20rem;
+  max-height: 20rem;
+}
+
+.gestao-embed-root .gestao-notice-card-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* WebKit: Chrome, Safari, Edge (incl. mobile) */
+.gestao-embed-root .gestao-notice-card-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.gestao-embed-root .gestao-notice-card-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.gestao-embed-root .gestao-notice-card-body::-webkit-scrollbar-thumb {
+  background: var(--color-brand-border, #141414);
+}
+
+/* Botões ícone — borda quadrada padrão Eye Vision */
+.gestao-embed-root .gestao-embed-force-light button.h-8.w-8,
+.gestao-embed-root .gestao-embed-force-light button[size='icon'] {
+  border-radius: 0 !important;
+  border: 1px solid var(--color-brand-border, #141414) !important;
+  box-shadow: none !important;
+}

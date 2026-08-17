@@ -1,0 +1,30 @@
+{
+  "transactions": [
+    {
+      "date": "2026-05-01",
+      "description": "Pix Paulo Henrique Souza Lima (Enviado)",
+      "amount": -100,
+      "balance": 67824.29,
+      "category": "Transferência"
+    },
+    {
+      "date": "2026-05-04",
+      "description": "Depósito de vendas Vendas (Depósito InfinitePay)",
+      "amount": 5200.58,
+      "balance": null,
+      "category": "Receita"
+    },
+    {
+      "date": "2026-05-04",
+      "description": "Pix ADEMIR SANTOS DA SILVA (Recebido)",
+      "amount": 4500,
+      "balance": null,
+      "category": "Receita"
+    }
+  ],
+  "metadata": {
+    "bank_name": "InfinitePay (Cloudwalk)",
+    "account_number": "0001 - 16455473-6",
+    "period": "05/2026"
+  }
+}

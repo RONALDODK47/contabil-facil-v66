@@ -1,0 +1,13 @@
+.doc-colunas-extract-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 300ms ease;
+  background: linear-gradient(to right, #1e293b, #475569);
+}
+
+.doc-colunas-live-ocr-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 300ms ease;
+  background: linear-gradient(to right, #065f46, #10b981);
+}

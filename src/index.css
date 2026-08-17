@@ -1,0 +1,237 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-brand-bg: #E4E3E0;
+  --color-brand-sidebar: #DCDAD7;
+  --color-brand-text: #141414;
+  --color-brand-border: #141414;
+
+  /** Altura padrão de painéis/tabelas com rolagem interna (ContabilFacil). */
+  --module-panel-height: 480px;
+  --module-panel-height-nested: 240px;
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --module-panel-height: min(58vh, 440px);
+    --module-panel-height-nested: min(42vh, 260px);
+  }
+}
+
+body {
+  @apply bg-brand-bg text-brand-text font-sans antialiased;
+}
+
+@layer base {
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  .cf-no-number-spin::-webkit-inner-spin-button,
+  .cf-no-number-spin::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .cf-no-number-spin {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  select.cf-select {
+    -webkit-appearance: menulist;
+    appearance: auto;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+}
+
+.technical-panel {
+  @apply border border-brand-border bg-white;
+}
+
+/** Formulários: preferir classe CF_FORM_FIELDS (formFieldClasses.ts) para campos pequenos/médios lado a lado. */
+
+.technical-button {
+  @apply px-4 py-2 border border-brand-border text-[10px] font-bold uppercase tracking-widest transition-colors hover:bg-brand-border hover:text-brand-bg;
+}
+
+.technical-button-primary {
+  @apply px-4 py-2 bg-brand-border text-brand-bg text-[10px] font-bold uppercase tracking-widest transition-colors hover:bg-brand-border/90;
+}
+
+.technical-button-secondary {
+  @apply px-4 py-2 border border-brand-border bg-brand-sidebar text-brand-text text-[10px] font-bold uppercase tracking-widest transition-colors hover:bg-brand-border hover:text-brand-bg;
+}
+
+.technical-grid-header {
+  @apply bg-brand-sidebar border-b border-brand-border text-[10px] font-bold uppercase;
+}
+
+.technical-grid-row {
+  @apply border-b border-brand-border/20 font-mono text-[11px] transition-colors hover:bg-brand-border hover:text-brand-bg;
+}
+
+/**
+ * Padrão de painéis e tabelas do ContabilFacil:
+ * - altura fixa (--module-panel-height), largura 100% do container (split ou full)
+ * - rolagem sempre interna; a página não cresce com o conteúdo
+ */
+
+/** Tabela ou lista ocupando o painel inteiro (sem cabeçalho fixo acima do scroll). */
+.module-table-viewport {
+  height: var(--module-panel-height);
+  max-height: var(--module-panel-height);
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+}
+
+/** Painel fixo: corpo rolável + rodapé sempre visível (barras no viewport, não no fim da tabela). */
+.module-table-viewport-stacked {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: var(--module-panel-height);
+  max-height: var(--module-panel-height);
+  width: 100%;
+  min-width: 0;
+}
+
+.module-table-viewport-scroll {
+  flex: 1 1 0%;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+}
+
+.module-table-viewport-footer {
+  flex-shrink: 0;
+}
+
+/** Painel com cabeçalho/toolbar fixo + corpo rolável (custos, créditos, estoque, etc.). */
+.module-panel-scroll {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: var(--module-panel-height);
+  max-height: var(--module-panel-height);
+  width: 100%;
+  min-width: 0;
+}
+
+.module-panel-scroll-body {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: auto;
+}
+
+/** Rolagem horizontal de abas em telas estreitas (celular). */
+.cf-scroll-tabs {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/** Painéis que crescem com o conteúdo no celular (lista/editor de estoque). */
+@media (max-width: 1023px) {
+  .module-panel-scroll-fluid {
+    height: auto;
+    max-height: none;
+  }
+
+  .module-panel-scroll-fluid .module-panel-scroll-body {
+    max-height: min(62vh, 520px);
+    overflow: auto;
+  }
+
+  .module-panel-scroll-fluid.module-panel-scroll-fluid--editor .module-panel-scroll-body {
+    max-height: none;
+    min-height: min(72vh, 680px);
+  }
+}
+
+/** Área de toque mínima em botões/links no celular. */
+@media (max-width: 639px) {
+  .cf-touch-target {
+    min-height: 2.75rem;
+  }
+}
+
+/** Sub-tabelas / detalhes expandidos dentro de uma linha. */
+.module-table-viewport-nested {
+  height: var(--module-panel-height-nested);
+  max-height: var(--module-panel-height-nested);
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+}
+
+.virtual-table-spacer td {
+  padding: 0;
+  border: none;
+  line-height: 0;
+  font-size: 0;
+}
+
+/** Tooltips e legendas dos gráficos Canvas (sem style inline no JSX). */
+.canvas-chart-host {
+  min-height: 200px;
+}
+
+.canvas-chart-tip-amort {
+  pointer-events: none;
+  position: absolute;
+  z-index: 10;
+  padding: 0.375rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background-color: #141414;
+  color: #e4e3e0;
+  border-radius: 0;
+  transform: translate(-50%, 0);
+}
+
+.canvas-chart-tip-amort-accent {
+  color: #2563eb;
+}
+
+.canvas-chart-tip-overview {
+  pointer-events: none;
+  position: absolute;
+  z-index: 10;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
+  padding: 0.5rem 0.75rem;
+  font-size: 13px;
+  border-radius: 0.5rem;
+  background-color: #0f172a;
+  border: 1px solid #1e293b;
+  color: #e2e8f0;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.3);
+}
+
+.canvas-chart-legend {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.canvas-chart-legend--row {
+  gap: 1rem;
+}
