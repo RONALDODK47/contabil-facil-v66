@@ -430,8 +430,6 @@ export default memo(function ExtratoRegrasContasModal({
           ? `Nada novo: ${result.skipped} regra(s) já existiam em ${destLabel}.`
           : 'Nenhuma regra replicada.',
       );
-      // Mesmo assim abre o destino para o usuário conferir
-      applyContaBanco(target);
       setReplicateTarget('');
       return;
     }
@@ -439,11 +437,8 @@ export default memo(function ExtratoRegrasContasModal({
       `Replicadas ${result.added} regra(s) para ${target} — ${destLabel}` +
       (result.skipped ? ` (${result.skipped} já existiam)` : ''),
     );
-    // Troca para o banco destino para as regras aparecerem na lista
-    applyContaBanco(target);
     setReplicateTarget('');
   }, [
-    applyContaBanco,
     bancoOptions,
     company,
     matchBancoCode,
