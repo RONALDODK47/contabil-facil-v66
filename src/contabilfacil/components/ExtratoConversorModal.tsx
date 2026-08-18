@@ -49,7 +49,13 @@ function parseFlexibleBRLInput(raw: string): number {
 interface ExtratoConversorModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImport?: (data: BankStatementJSON, contaBanco: string, bancoNome: string) => void;
+  /** `saldoAnterior` é o valor digitado no conversor (0 quando não informado). */
+  onImport?: (
+    data: BankStatementJSON,
+    contaBanco: string,
+    bancoNome: string,
+    saldoAnterior: number
+  ) => void;
   planoContaOptions?: ExtratoPlanoContaOption[];
 }
 
@@ -164,7 +170,7 @@ export function ExtratoConversorModal({ isOpen, onClose, onImport, planoContaOpt
     if (result && onImport) {
       const bankName = selectedBank ? BANK_FORMATS[selectedBank]?.displayName || String(selectedBank) : '';
       const bName = result.metadata.bank_name || bankName || '';
-      onImport(result, contaBanco, bName);
+      onImport(result, contaBanco, bName, saldoAnterior);
       onClose();
     }
   };
@@ -179,14 +185,27 @@ export function ExtratoConversorModal({ isOpen, onClose, onImport, planoContaOpt
     setStep('upload');
   };
 
+  // Voltar para banco/layout precisa descartar o arquivo e o resultado da
+  // conversão anterior: sem isso o PDF antigo continuava selecionado e uma
+  // nova conversão devolvia os lançamentos do extrato anterior, como se o
+  // parser tivesse lido o arquivo errado.
+  const limparArquivoEResultado = () => {
+    setFile(null);
+    setResult(null);
+    setValidation(null);
+    setError(null);
+  };
+
   const handleBackToBank = () => {
     setSelectedBank(null);
     setSelectedLayout(null);
+    limparArquivoEResultado();
     setStep('bank');
   };
 
   const handleBackToLayout = () => {
     setSelectedLayout(null);
+    limparArquivoEResultado();
     setStep('layout');
   };
 

@@ -25,6 +25,7 @@ const LAYOUT_IMAGES: Record<string, string> = {
   bradesco_netempresa: '/extratos/bradesco_netempresa.png',
   caixa_extrato_periodo: '/extratos/caixa_extrato_periodo.png',
   caixa_app_periodo: '/extratos/caixa_app_extrato_periodo.png',
+  caixa_gerenciador_periodo: '/extratos/caixa_gerenciador_periodo.png',
   cresol_extrato_periodo: '/extratos/cresol_extrato_periodo.png',
 };
 
@@ -49,7 +50,10 @@ export function LayoutSelector({
   }, [bankCode, selectedLayout, bank.layouts]);
 
   const layout = bank.layouts[Math.min(indice, total - 1)];
-  const imageUrl = LAYOUT_IMAGES[layout.id];
+  // O mapa acima é só um override; o padrão é o imageUrl declarado no próprio
+  // layout em bankFormats — sem esse fallback, todo layout novo nascia com
+  // "prévia não disponível" até alguém lembrar de editar este arquivo.
+  const imageUrl = LAYOUT_IMAGES[layout.id] ?? layout.imageUrl;
   const isSelected = selectedLayout === layout.id;
   const irPara = (i: number) => setIndice((i + total) % total);
 

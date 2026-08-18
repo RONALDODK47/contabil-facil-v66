@@ -2372,7 +2372,7 @@ export default function DataIngestionBox({
           isOpen={showConversor}
           onClose={() => setShowConversor(false)}
           planoContaOptions={extratoPlanoOptions}
-          onImport={(result, contaBanco, bancoNome) => {
+          onImport={(result, contaBanco, bancoNome, saldoAnteriorConversor) => {
             if (selectedCompany && contaBanco) {
               saveExtratoBancoParaImportacao(selectedCompany, bancoNome || 'Banco', contaBanco);
             }
@@ -2386,7 +2386,14 @@ export default function DataIngestionBox({
               status: 'PENDENTE' as const,
             }));
             onLog?.(`── CONVERSOR ${items.length} lançamento(s) banco=${contaBanco || '—'} (${bancoNome || '—'})`, 'conversor');
-            onImport(items);
+            // Saldo anterior digitado no conversor já vai preenchido para o card
+            // do extrato — sem isso o usuário precisava digitar o mesmo valor duas vezes.
+            onImport(
+              items,
+              Number.isFinite(saldoAnteriorConversor) && saldoAnteriorConversor !== 0
+                ? saldoAnteriorConversor
+                : undefined,
+            );
             setShowConversor(false);
             setSuccessMsg(`CONVERSOR CONCLUÍDO! ${items.length} lançamento(s) importado(s).`);
           }}

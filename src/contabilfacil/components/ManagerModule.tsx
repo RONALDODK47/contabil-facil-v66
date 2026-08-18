@@ -531,6 +531,11 @@ export default function ManagerModule({
   razaoRowsRef.current = razaoRows;
   const saldoAnteriorExtratoRef = useRef(saldoAnteriorExtrato);
   saldoAnteriorExtratoRef.current = saldoAnteriorExtrato;
+  // Só persiste o saldo anterior depois que ele foi realmente carregado desta
+  // empresa: o carregamento é adiado (deferIdle 400ms) e, em StrictMode/troca
+  // rápida de empresa, o cleanup rodava antes com o estado ainda em 0 e
+  // gravava esse 0 por cima do valor digitado — some ao atualizar a página.
+  const saldoAnteriorCarregadoRef = useRef(false);
   const extratoContaCacheRef = useRef(extratoContaCache);
   extratoContaCacheRef.current = extratoContaCache;
   const extratoAsyncVersionRef = useRef(0);
@@ -560,7 +565,9 @@ export default function ManagerModule({
       if (razaoRowsRef.current.length > 0) {
         writeManagerDataNow(companyScope, 'razao', razaoRowsRef.current);
       }
-      writeSaldoAnteriorExtrato(companyScope, saldoAnteriorExtratoRef.current);
+      if (saldoAnteriorCarregadoRef.current) {
+        writeSaldoAnteriorExtrato(companyScope, saldoAnteriorExtratoRef.current);
+      }
       saveExtratoContaMappingCache(companyScope, extratoContaCacheRef.current);
       flushManagerDataWrites();
     };
@@ -1092,18 +1099,26 @@ export default function ManagerModule({
 
         setExtratoLancamentos(extratoComStatus);
         setExtratoContaCache(loadedCache);
+        // Pasta salva antes deste campo existir (ou salva com 0) não pode
+        // apagar o saldo que o usuário digitou: quando a pasta não tem valor,
+        // vale o último saldo gravado para a empresa.
+        const saldoAnteriorGravado = readSaldoAnteriorExtrato(companyScope);
         const saldoAnteriorSalvo = pastaAtiva
-          ? pastaAtiva.saldoAnterior || 0
-          : readSaldoAnteriorExtrato(companyScope);
+          ? pastaAtiva.saldoAnterior || saldoAnteriorGravado
+          : saldoAnteriorGravado;
         if (pastaAtiva) {
           setSaldoAnteriorExtrato(saldoAnteriorSalvo);
           writeSaldoAnteriorExtrato(companyScope, saldoAnteriorSalvo);
+          if (pastaAtivaId && !pastaAtiva.saldoAnterior && saldoAnteriorSalvo) {
+            updateExtratoPastaSaldoAnterior(companyScope, pastaAtivaId, saldoAnteriorSalvo);
+          }
         } else if (saldoAnteriorSalvo === 0 && saldoAnteriorSugerido != null) {
           setSaldoAnteriorExtrato(saldoAnteriorSugerido);
           writeSaldoAnteriorExtrato(companyScope, saldoAnteriorSugerido);
         } else {
           setSaldoAnteriorExtrato(saldoAnteriorSalvo);
         }
+        saldoAnteriorCarregadoRef.current = true;
         setFolhaPayroll(readManagerData<PayrollRecord>(companyScope, 'folha'));
         setFolhaRelatorio(readManagerData<FolhaRelatorioRow>(companyScope, 'folhaRelatorio'));
         setFolhaRegras(loadFolhaRegras(companyScope));
@@ -1129,6 +1144,7 @@ export default function ManagerModule({
     };
 
     try {
+      saldoAnteriorCarregadoRef.current = false;
       loadPlano();
       deferIdle(loadOperationalData, 400);
     } catch (e) {
@@ -1216,8 +1232,15 @@ export default function ManagerModule({
 
         writeManagerDataNow(companyScope, 'extrato', extratoFinal);
         setExtratoLancamentos(extratoFinal);
-        setSaldoAnteriorExtrato(pastaAtiva.saldoAnterior || 0);
-        writeSaldoAnteriorExtrato(companyScope, pastaAtiva.saldoAnterior || 0);
+        // Idem loadOperationalData: pasta sem saldo mantém o valor digitado.
+        const saldoAnteriorHydrated =
+          pastaAtiva.saldoAnterior || readSaldoAnteriorExtrato(companyScope);
+        setSaldoAnteriorExtrato(saldoAnteriorHydrated);
+        writeSaldoAnteriorExtrato(companyScope, saldoAnteriorHydrated);
+        if (!pastaAtiva.saldoAnterior && saldoAnteriorHydrated) {
+          updateExtratoPastaSaldoAnterior(companyScope, pastaAtiva.id, saldoAnteriorHydrated);
+        }
+        saldoAnteriorCarregadoRef.current = true;
       } else {
         const storedExtrato = readManagerData<BankStatement>(companyScope, 'extrato');
         addDebugLog(`── HYDRATED (nuvem) sem pasta ativa — extrato bruto ${storedExtrato.length} linhas`, 'conciliação');
@@ -1225,6 +1248,7 @@ export default function ManagerModule({
           setExtratoLancamentos(syncExtratoConciliacaoStatus(storedExtrato));
         }
         setSaldoAnteriorExtrato(readSaldoAnteriorExtrato(companyScope));
+        saldoAnteriorCarregadoRef.current = true;
       }
       const storedRazao = normalizeRazaoImport(readManagerData<VisionBalanceteRow>(companyScope, 'razao'));
       if (storedRazao.length > 0) {
@@ -2872,6 +2896,7 @@ export default function ManagerModule({
                           aria-label="Saldo anterior do extrato"
                           value={saldoAnteriorExtrato}
                           onChange={(v) => {
+                            saldoAnteriorCarregadoRef.current = true;
                             setSaldoAnteriorExtrato(v);
                             writeSaldoAnteriorExtrato(selectedCompany, v);
                             // Grava também na pasta (extrato salvo) ativa — sem isso o
@@ -3229,11 +3254,22 @@ export default function ManagerModule({
                         addDebugLog(`── IMPORTAR extrato ${raw.length} linha(s) banco=${getExtratoBancoConta(companyScope) || '(sem conta)'}`, 'importação');
                         startTransition(() => setExtratoLancamentos(raw));
                         writeManagerData(companyScope, 'extrato', raw);
+                        // O extrato importado ainda não é uma pasta salva: desfaz o
+                        // vínculo com a pasta anterior para o saldo digitado agora não
+                        // sobrescrever o saldo do extrato que estava selecionado.
+                        clearExtratoPastaAtivaId(companyScope);
+                        // Saldo anterior é sempre do extrato atual: usa o informado
+                        // (conversor/OFX) ou o detectado no arquivo e, na falta dos dois,
+                        // zera — nunca herda o valor do extrato importado antes.
                         const saldoAnteriorFinal = saldoAnterior ?? saldoAnteriorSugerido;
-                        if (saldoAnteriorFinal != null && Number.isFinite(saldoAnteriorFinal)) {
-                          setSaldoAnteriorExtrato(saldoAnteriorFinal);
-                          writeSaldoAnteriorExtrato(companyScope, saldoAnteriorFinal);
-                        }
+                        const saldoAnteriorAplicado =
+                          saldoAnteriorFinal != null && Number.isFinite(saldoAnteriorFinal)
+                            ? saldoAnteriorFinal
+                            : 0;
+                        saldoAnteriorCarregadoRef.current = true;
+                        setSaldoAnteriorExtrato(saldoAnteriorAplicado);
+                        saldoAnteriorExtratoRef.current = saldoAnteriorAplicado;
+                        writeSaldoAnteriorExtrato(companyScope, saldoAnteriorAplicado);
                         void applyExtratoContaResolverAsync(
                           raw,
                           planoParaResolver,

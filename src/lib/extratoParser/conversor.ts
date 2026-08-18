@@ -18,6 +18,7 @@ import {
   parseBradescoWords,
   parseCaixaWords,
   parseCaixaAppWords,
+  parseCaixaGerenciadorWords,
   parseCresolWords,
   type InfinitePayJSONInput,
 } from './bankParsers';
@@ -162,7 +163,11 @@ export async function convertPDFFileToJSON(
     const { extractWordsFromPDFFile } = await import('./pdfExtractor');
     const pages = await extractWordsFromPDFFile(file);
     const { transactions, metadata } =
-      layoutId === 'caixa_app_periodo' ? parseCaixaAppWords(pages) : parseCaixaWords(pages);
+      layoutId === 'caixa_app_periodo'
+        ? parseCaixaAppWords(pages)
+        : layoutId === 'caixa_gerenciador_periodo'
+          ? parseCaixaGerenciadorWords(pages)
+          : parseCaixaWords(pages);
     return finalizeStatement(transactions, metadata, overrideMetadata);
   }
 

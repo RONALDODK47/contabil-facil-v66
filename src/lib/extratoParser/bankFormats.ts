@@ -511,6 +511,41 @@ export const BANK_FORMATS: Record<BankCode, BankInfo> = {
         ],
       },
       {
+        id: 'caixa_gerenciador_periodo',
+        name: 'Extrato por Período (Gerenciador)',
+        description:
+          'Impressão do Gerenciador CAIXA (gerenciador.caixa.gov.br) em tabela simples: Data Mov. | Nr. Doc. | Histórico | Valor | Saldo, uma linha por lançamento, com sinal C/D no valor e linhas "SALDO DIA" ignoradas',
+        icon: '🖨️',
+        imageUrl: '/extratos/caixa_gerenciador_periodo.png',
+        columns: [
+          {
+            name: 'Data Mov.',
+            description: 'Data do lançamento (DD/MM/AAAA)',
+            example: '04/05/2026',
+          },
+          {
+            name: 'Nr. Doc.',
+            description: 'Número do documento (não entra na descrição)',
+            example: '011205',
+          },
+          {
+            name: 'Histórico',
+            description: 'Tipo da operação abreviado (DEB PIX CH, CRE PIX CH, C PIX QRES, DP DIN LOT, etc.)',
+            example: 'DEB PIX CH / CRE PIX CH / DP DIN LOT',
+          },
+          {
+            name: 'Valor',
+            description: 'Valor do lançamento com sinal C (crédito) ou D (débito)',
+            example: '1.520,00 D / 300,00 C',
+          },
+          {
+            name: 'Saldo',
+            description: 'Saldo da conta após o lançamento',
+            example: '21.325,53 C',
+          },
+        ],
+      },
+      {
         id: 'caixa_app_periodo',
         name: 'Extrato por Período (App)',
         description:

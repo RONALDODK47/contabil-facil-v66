@@ -283,74 +283,74 @@ export default function BalanceteTabPanel({
         </div>
       </div>
 
-      {(temRazao || temPlano) && (
-        <div
-          className={cn(
-            'technical-panel p-4 space-y-3 min-w-0',
-            !periodoConfirmado && 'border-amber-600/50 bg-amber-50/30',
-          )}
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Filter size={14} className="opacity-50" />
-            <span className="text-[10px] font-black uppercase tracking-widest">
-              Período <span className="text-amber-700">*</span>
+      {/* O filtro de período fica sempre visível, mesmo sem razão/plano
+          importados: esconder o painel deixava a aba sem nenhuma opção à mostra. */}
+      <div
+        className={cn(
+          'technical-panel p-4 space-y-3 min-w-0',
+          !periodoConfirmado && 'border-amber-600/50 bg-amber-50/30',
+        )}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Filter size={14} className="opacity-50" />
+          <span className="text-[10px] font-black uppercase tracking-widest">
+            Período <span className="text-amber-700">*</span>
+          </span>
+          {temRazao && (
+            <span className="text-[9px] font-mono bg-brand-border text-brand-bg px-2 py-0.5 font-bold">
+              {razaoRows.length.toLocaleString('pt-BR')} lançamento(s) no razão
             </span>
-            {temRazao && (
-              <span className="text-[9px] font-mono bg-brand-border text-brand-bg px-2 py-0.5 font-bold">
-                {razaoRows.length.toLocaleString('pt-BR')} lançamento(s) no razão
-              </span>
-            )}
-          </div>
-          <div className="flex flex-wrap items-end gap-3">
+          )}
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
 
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider opacity-60 mb-1 block">De</label>
-              <input aria-label="De"
-                type="date"
-                value={brToDate(periodoDe)}
-                onChange={(e) => setPeriodoDe(dateToBr(e.target.value))}
-                className="w-40 border border-brand-border bg-brand-bg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand-border"
-              />
-            </div>
-            <div>
-              <label className="text-[9px] font-bold uppercase tracking-wider opacity-60 mb-1 block">Até</label>
-              <input aria-label="Até"
-                type="date"
-                value={brToDate(periodoAte)}
-                onChange={(e) => setPeriodoAte(dateToBr(e.target.value))}
-                className="w-40 border border-brand-border bg-brand-bg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand-border"
-              />
-            </div>
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-wider opacity-60 mb-1 block">De</label>
+            <input aria-label="De"
+              type="date"
+              value={brToDate(periodoDe)}
+              onChange={(e) => setPeriodoDe(dateToBr(e.target.value))}
+              className="w-40 border border-brand-border bg-brand-bg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand-border"
+            />
+          </div>
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-wider opacity-60 mb-1 block">Até</label>
+            <input aria-label="Até"
+              type="date"
+              value={brToDate(periodoAte)}
+              onChange={(e) => setPeriodoAte(dateToBr(e.target.value))}
+              className="w-40 border border-brand-border bg-brand-bg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand-border"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={aplicarPeriodo}
+            disabled={!periodoDe.trim() || !periodoAte.trim()}
+            className="technical-button-primary px-4 py-2 text-[10px] font-black uppercase disabled:opacity-40"
+          >
+            OK
+          </button>
+          {(periodoDe || periodoAte || periodoConfirmado) && (
             <button
               type="button"
-              onClick={aplicarPeriodo}
-              disabled={!periodoDe.trim() || !periodoAte.trim()}
-              className="technical-button-primary px-4 py-2 text-[10px] font-black uppercase disabled:opacity-40"
+              onClick={limparPeriodo}
+              className="technical-button-secondary px-3 py-2 text-[10px] font-bold uppercase"
             >
-              OK
+              Limpar
             </button>
-            {(periodoDe || periodoAte || periodoConfirmado) && (
-              <button
-                type="button"
-                onClick={limparPeriodo}
-                className="technical-button-secondary px-3 py-2 text-[10px] font-bold uppercase"
-              >
-                Limpar
-              </button>
-            )}
-          </div>
-          {periodoConfirmado && (
-            <div className="w-full min-w-0">{periodToolbar}</div>
           )}
-          {periodoRazao.min && periodoRazao.max ? (
-            <p className="text-[9px] font-mono text-slate-600">
-              Lançamentos no razão: <strong>{periodoRazao.min}</strong> a{' '}
-              <strong>{periodoRazao.max}</strong>
-              {!periodoConfirmado ? ' — confirme De/Até e clique OK' : ' · colunas só nesses meses com movimento'}
-            </p>
-          ) : null}
         </div>
-      )}
+        {periodoConfirmado && (
+          <div className="w-full min-w-0">{periodToolbar}</div>
+        )}
+        {periodoRazao.min && periodoRazao.max ? (
+          <p className="text-[9px] font-mono text-slate-600">
+            Lançamentos no razão: <strong>{periodoRazao.min}</strong> a{' '}
+            <strong>{periodoRazao.max}</strong>
+            {!periodoConfirmado ? ' — confirme De/Até e clique OK' : ' · colunas só nesses meses com movimento'}
+          </p>
+        ) : null}
+      </div>
 
       {!temRazao && !temPlano && (
         <div className="technical-panel p-12 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">

@@ -2180,3 +2180,126 @@ export function parseCresolWords(pages: PdfWord[][]): {
 
   return { transactions, metadata: extractCresolMetadata(pages) };
 }
+
+// ─── Caixa (Gerenciador CAIXA — "Extrato por período") ─────────────────────
+// Impressão do Gerenciador Financeiro (gerenciador.caixa.gov.br), layout de
+// tabela simples: Data Mov. | Nr. Doc. | Histórico | Valor | Saldo, uma linha
+// por lançamento (sem quebra de histórico, sem favorecido e sem CPF/CNPJ).
+// Valor e Saldo vêm alinhados à direita com o sinal C/D colado no fim do
+// token ("1.520,00 D"), e cada dia termina com uma linha "SALDO DIA" de valor
+// 0,00 que não é lançamento.
+
+const CAIXA_GER_DATE_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/;
+const CAIXA_GER_MONEY_RE = /^(\d{1,3}(?:\.\d{3})*,\d{2})\s*([CD])$/i;
+const CAIXA_GER_ROW_TOLERANCE = 3;
+
+// Colunas do PDF (pontos, origem à esquerda): Data ~40, Nr.Doc ~102,
+// Histórico ~168, Valor ~375-395 (alinhado à direita em ~400), Saldo ~499.
+const CAIXA_GER_COL_DATE = [30, 90] as const;
+const CAIXA_GER_COL_DOC = [92, 150] as const;
+const CAIXA_GER_COL_HISTORICO = [150, 340] as const;
+const CAIXA_GER_VALOR_SALDO_SPLIT_X = 460;
+
+function caixaGerMoneyToNumber(raw: string): number {
+  return parseFloat(raw.replace(/\./g, '').replace(',', '.')) || 0;
+}
+
+function extractCaixaGerenciadorMetadata(pages: PdfWord[][]): BankStatementMetadata | null {
+  const joined = pages.flat().map((w) => w.str).join(' ');
+
+  // "Conta: 1827 | 1292 | 000579015952-0" → usa o número da conta (último campo).
+  const contaMatch = joined.match(/\b(\d{6,}-\d)\b/);
+  // Período real vem da URL de impressão (hdnDataInicio=01/05/2026) ou de
+  // "Mês: Maio/2026"; o primeiro é mais confiável por já vir em números.
+  const urlMatch = joined.match(/hdnDataInicio=(\d{2})\/(\d{2})\/(\d{4})/);
+
+  let period: string | null = urlMatch ? `${urlMatch[2]}/${urlMatch[3]}` : null;
+  if (!period) {
+    const mesMatch = joined.match(/M[êe]s:\s*([A-Za-zçÇ]+)\/(\d{4})/);
+    const mm = mesMatch ? CAIXA_APP_MONTHS[mesMatch[1].toLowerCase()] : undefined;
+    if (mesMatch && mm) period = `${mm}/${mesMatch[2]}`;
+  }
+
+  return {
+    bank_name: 'Caixa Econômica Federal',
+    account_number: contaMatch ? contaMatch[1] : '000000-0',
+    period: period ?? '01/2026',
+  };
+}
+
+export function parseCaixaGerenciadorWords(pages: PdfWord[][]): {
+  transactions: ExtratoLine[];
+  metadata: BankStatementMetadata | null;
+} {
+  const transactions: ExtratoLine[] = [];
+
+  for (const words of pages) {
+    // Agrupa por linha visual (Y), já que cada lançamento ocupa uma única linha.
+    const rows = new Map<number, PdfWord[]>();
+    for (const w of words) {
+      let key: number | null = null;
+      for (const y of rows.keys()) {
+        if (Math.abs(y - w.y0) <= CAIXA_GER_ROW_TOLERANCE) {
+          key = y;
+          break;
+        }
+      }
+      if (key === null) {
+        key = w.y0;
+        rows.set(key, []);
+      }
+      rows.get(key)!.push(w);
+    }
+
+    const orderedRows = [...rows.entries()].sort((a, b) => b[0] - a[0]);
+
+    for (const [, rowWords] of orderedRows) {
+      const sorted = [...rowWords].sort((a, b) => a.x0 - b.x0);
+
+      const dateWord = sorted.find(
+        (w) => caixaInRange(w.x0, CAIXA_GER_COL_DATE) && CAIXA_GER_DATE_RE.test(w.str.trim())
+      );
+      if (!dateWord) continue;
+      const [, dd, mm, yyyy] = CAIXA_GER_DATE_RE.exec(dateWord.str.trim())!;
+
+      const historicoWords: string[] = [];
+      let valorAmount: number | null = null;
+      let saldoAmount: number | null = null;
+
+      for (const w of sorted) {
+        if (w === dateWord) continue;
+        const str = w.str.trim();
+        if (!str) continue;
+
+        if (caixaInRange(w.x0, CAIXA_GER_COL_DOC)) continue; // Nr. Doc não entra na descrição
+
+        const money = CAIXA_GER_MONEY_RE.exec(str.replace('С', 'C').replace('с', 'c'));
+        if (money) {
+          const value = caixaGerMoneyToNumber(money[1]);
+          const signed = caixaNormalizeSign(money[2]) === 'D' ? -value : value;
+          if (w.x0 >= CAIXA_GER_VALOR_SALDO_SPLIT_X) saldoAmount = signed;
+          else valorAmount = signed;
+          continue;
+        }
+
+        if (caixaInRange(w.x0, CAIXA_GER_COL_HISTORICO)) historicoWords.push(str);
+      }
+
+      const historico = historicoWords.join(' ').replace(/\s+/g, ' ').trim();
+      if (!historico) continue;
+      if (/^SALDO\s+(DIA|ANTERIOR)$/i.test(historico)) continue;
+      if (/^hist[óo]rico$/i.test(historico)) continue; // cabeçalho da tabela
+      if (valorAmount === null || valorAmount === 0) continue;
+
+      transactions.push({
+        date: `${yyyy}-${mm}-${dd}`,
+        description: historico,
+        amount: valorAmount,
+        balance: saldoAmount ?? undefined,
+        raw: sorted.map((w) => w.str).join(' '),
+      });
+    }
+  }
+
+  return { transactions, metadata: extractCaixaGerenciadorMetadata(pages) };
+}
