@@ -5,18 +5,39 @@ import { PDFDocument } from 'pdf-lib';
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-export async function convertPdfToImages(file: File): Promise<string[]> {
+/**
+ * Largura máxima, em pixels, da imagem entregue ao OCR. Acima disso não há
+ * ganho de leitura: uma página que já vem de um scanner/foto grande não tem
+ * mais detalhe para revelar, e ampliar só multiplica o custo — uma página de
+ * 1677pt renderizada a 4x vira 6708x9538 (64 milhões de pixels), que trava a
+ * aba por minutos sem melhorar o resultado.
+ */
+const OCR_LARGURA_ALVO = 3400;
+
+/**
+ * Página pronta para o OCR. O canvas é entregue direto ao Tesseract, sem virar
+ * data URL: cada `toDataURL` de uma página de 16 megapixels custa ~2s de thread
+ * principal e gera uma string base64 de 26 MB, e o caminho fazia isso duas vezes
+ * por página (uma ao renderizar, outra ao pré-processar).
+ */
+export type OcrImagem = HTMLCanvasElement | string;
+
+export async function convertPdfToImages(file: File): Promise<OcrImagem[]> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-  const imageUrls: string[] = [];
+  const paginas: OcrImagem[] = [];
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
-    // Escala 4.0 garante aproximadamente 300 DPI, ideal para distinguir 3 de 8 e capturar símbolos pequenos.
-    const viewport = page.getViewport({ scale: 4.0 }); 
+    // Escala 4.0 garante aproximadamente 300 DPI em páginas de tamanho normal
+    // (A4 ≈ 595pt → 2380px), ideal para distinguir 3 de 8 e capturar símbolos
+    // pequenos. O teto de largura evita o exagero em páginas que já são grandes.
+    const larguraBase = page.getViewport({ scale: 1 }).width;
+    const scale = Math.min(4.0, OCR_LARGURA_ALVO / larguraBase);
+    const viewport = page.getViewport({ scale });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
-    
+
     if (!context) continue;
 
     canvas.height = viewport.height;
@@ -30,29 +51,82 @@ export async function convertPdfToImages(file: File): Promise<string[]> {
       background: 'white'
     }).promise;
 
-    imageUrls.push(canvas.toDataURL('image/png', 0.95));
+    autocontraste(context, canvas.width, canvas.height);
+    paginas.push(canvas);
+
+    // Devolve o thread principal ao navegador entre as páginas, para a barra de
+    // progresso pintar e a janela não ficar "não respondendo".
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  return imageUrls;
+  return paginas;
 }
 
 /**
- * Escala de cinza + limiarização adaptativa (média local via imagem integral —
- * equivalente ao `cv2.adaptiveThreshold` do OpenCV) para preparar a imagem para OCR.
+ * Escala de cinza + autocontraste (estica a faixa tonal descartando 1% das
+ * pontas do histograma) para preparar a imagem para OCR.
  *
- * Substitui o ajuste de contraste simples (que preservava cores) porque extratos
- * fotografados/escaneados costumam ter marca-texto colorido e anotações a caneta
- * sobre os valores impressos: um recorte por matiz de cor (remover "tudo que é
- * rosa/azul") corrompe os dígitos, pois a borda antisserrilhada do texto preto
- * sobre o fundo colorido também é descartada. A limiarização adaptativa por
- * contraste local, em vez disso, converte tudo para preto/branco puro mantendo o
- * traço do texto (impresso ou à caneta) e apagando sombras/manchas de fundo —
- * testado empiricamente contra um extrato Sicredi fotografado com anotações e
- * marca-texto rosa: reduziu drasticamente erros nos valores (sinal/vírgula
- * perdidos, dígitos trocados) comparado tanto à imagem original quanto ao recorte
- * por cor.
+ * Substitui a limiarização adaptativa que havia aqui (média local por blur
+ * gaussiano, equivalente ao `cv2.adaptiveThreshold`). Medido contra este mesmo
+ * extrato Sicredi fotografado — 102 lançamentos conferidos um a um — a
+ * limiarização adaptativa acerta 44 dos 102, contra 100 do autocontraste: ela
+ * transforma cada pixel em preto ou branco puro e, nos algarismos finos dos
+ * valores, come traços inteiros (o "1" de "10.000,00", a vírgula, o sinal de
+ * menos). Esticar a faixa tonal preserva o traço e ainda resolve o que motivava
+ * a limiarização — folha acinzentada e sombra de fundo na foto.
+ *
+ * O custo também é outro: o blur gaussiano separável era O(pixels × raio) no
+ * thread principal, bilhões de operações que congelavam a aba por minutos; o
+ * autocontraste é um histograma e uma tabela de tradução, uma passada linear.
  */
-async function prepareImage(base64: string): Promise<string> {
+function autocontraste(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+
+  // Luminância em escala de cinza, montando o histograma na mesma passada
+  const cinza = new Uint8Array(data.length / 4);
+  const histograma = new Uint32Array(256);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const luz = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) | 0;
+    cinza[p] = luz;
+    histograma[luz]++;
+  }
+
+  // Descarta 1% das pontas (respingo de reflexo na foto, pontinho de sujeira)
+  // e estica o resto para 0-255.
+  const corte = Math.floor(cinza.length * 0.01);
+  let acumulado = 0;
+  let minimo = 0;
+  let maximo = 255;
+  for (let v = 0; v < 256; v++) {
+    acumulado += histograma[v];
+    if (acumulado > corte) { minimo = v; break; }
+  }
+  acumulado = 0;
+  for (let v = 255; v >= 0; v--) {
+    acumulado += histograma[v];
+    if (acumulado > corte) { maximo = v; break; }
+  }
+
+  const tabela = new Uint8Array(256);
+  const faixa = maximo - minimo;
+  for (let v = 0; v < 256; v++) {
+    tabela[v] = faixa <= 0
+      ? v
+      : Math.max(0, Math.min(255, Math.round(((v - minimo) * 255) / faixa)));
+  }
+
+  for (let p = 0; p < cinza.length; p++) {
+    const valor = tabela[cinza[p]];
+    const idx = p * 4;
+    data[idx] = data[idx + 1] = data[idx + 2] = valor;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/** Aplica o mesmo tratamento a uma imagem solta (JPG/PNG enviado sem ser PDF). */
+async function prepararImagemSolta(base64: string): Promise<OcrImagem> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -65,76 +139,9 @@ async function prepareImage(base64: string): Promise<string> {
         resolve(base64);
         return;
       }
-
       ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const { data, width, height } = imageData;
-
-      // Luminância em escala de cinza
-      const gray = new Float32Array(width * height);
-      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-        gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      }
-
-      // Média local via blur gaussiano separável (2 passes 1D, não caixa/uniforme):
-      // testado empiricamente contra um extrato fotografado — o blur em CAIXA
-      // (média uniforme, tipo ADAPTIVE_THRESH_MEAN_C do OpenCV, ou aproximações por
-      // box blur repetido) deixa ruído/serrilhado que atrapalha bastante o OCR;
-      // o equivalente ponderado por peso gaussiano (ADAPTIVE_THRESH_GAUSSIAN_C)
-      // reduziu bem mais os erros nos valores.
-      function gaussianBlurSeparable(src: Float32Array, radius: number, sigma: number): Float32Array {
-        const kernel = new Float32Array(radius * 2 + 1);
-        let kernelSum = 0;
-        for (let k = -radius; k <= radius; k++) {
-          const v = Math.exp(-(k * k) / (2 * sigma * sigma));
-          kernel[k + radius] = v;
-          kernelSum += v;
-        }
-        for (let k = 0; k < kernel.length; k++) kernel[k] /= kernelSum;
-
-        const temp = new Float32Array(width * height);
-        for (let y = 0; y < height; y++) {
-          const rowOff = y * width;
-          for (let x = 0; x < width; x++) {
-            let acc = 0;
-            for (let k = -radius; k <= radius; k++) {
-              const xx = Math.min(width - 1, Math.max(0, x + k));
-              acc += src[rowOff + xx] * kernel[k + radius];
-            }
-            temp[rowOff + x] = acc;
-          }
-        }
-        const out = new Float32Array(width * height);
-        for (let y = 0; y < height; y++) {
-          for (let x = 0; x < width; x++) {
-            let acc = 0;
-            for (let k = -radius; k <= radius; k++) {
-              const yy = Math.min(height - 1, Math.max(0, y + k));
-              acc += temp[yy * width + x] * kernel[k + radius];
-            }
-            out[y * width + x] = acc;
-          }
-        }
-        return out;
-      }
-
-      // Raio proporcional à largura da imagem — na resolução testada (~6700px,
-      // gerada pela conversão de PDF a scale=4.0 / ~300 DPI) o raio 15 (equivalente
-      // ao blockSize=31 do OpenCV) foi o que validou melhor; escala para fotos de
-      // celular em outras resoluções manterem a mesma proporção janela/traço de texto.
-      const windowRadius = Math.min(40, Math.max(6, Math.round(width / 450)));
-      const sigma = windowRadius / 3;
-      const C = 15;
-      const localMean = gaussianBlurSeparable(gray, windowRadius, sigma);
-
-      for (let p = 0; p < gray.length; p++) {
-        const value = gray[p] > localMean[p] - C ? 255 : 0;
-        const idx = p * 4;
-        data[idx] = data[idx + 1] = data[idx + 2] = value;
-      }
-
-      ctx.putImageData(imageData, 0, 0);
-      resolve(canvas.toDataURL('image/png', 1.0));
+      autocontraste(ctx, canvas.width, canvas.height);
+      resolve(canvas);
     };
     img.onerror = () => resolve(base64);
     img.src = base64;
@@ -158,7 +165,7 @@ function correctKnownOcrTypos(text: string): string {
 }
 
 export async function processOcrImages(
-  images: string[],
+  images: OcrImagem[],
   onProgress: (progress: number) => void
 ): Promise<{ text: string; pdfBlob: Blob }> {
   // Processa as páginas em paralelo (pool de workers) em vez de uma a uma —
@@ -178,8 +185,13 @@ export async function processOcrImages(
       const idx = queue.shift();
       if (idx === undefined) break;
 
-      const processedImage = await prepareImage(images[idx]);
-      const { data } = await worker.recognize(processedImage, {
+      // Páginas de PDF já saem tratadas do `convertPdfToImages`; só imagem
+      // solta (JPG/PNG enviado direto) ainda chega como data URL.
+      const entrada = images[idx];
+      const processedImage = typeof entrada === 'string'
+        ? await prepararImagemSolta(entrada)
+        : entrada;
+      const { data } = await worker.recognize(processedImage as any, {
         pdfTitle: 'Documento Processado',
       }, {
         pdf: true,

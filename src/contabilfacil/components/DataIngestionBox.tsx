@@ -314,6 +314,14 @@ interface DataIngestionBoxProps {
     disabled?: boolean;
     title?: string;
   };
+  /** Botão extra no fim da lista de ações, logo abaixo de "Importar TXT (Texto)". */
+  extraBottomAction?: {
+    label: string;
+    onClick: () => void;
+    icon?: React.ReactNode;
+    disabled?: boolean;
+    title?: string;
+  };
   /** Callback chamado quando os logs de importação mudam. */
   onLogsChange?: (logs: string[]) => void;
 }
@@ -334,6 +342,7 @@ export default function DataIngestionBox({
   onPdfVariantChange,
   skipLegacyTxtButton,
   extraTopAction,
+  extraBottomAction,
   onLogsChange,
 }: DataIngestionBoxProps) {
   const [loading, setLoading] = useState(false);
@@ -1875,6 +1884,19 @@ export default function DataIngestionBox({
               <FileText size={14} />
             </button>
           </div>
+        )}
+
+        {extraBottomAction && (
+          <button
+            type="button"
+            onClick={extraBottomAction.onClick}
+            disabled={extraBottomAction.disabled}
+            title={extraBottomAction.title}
+            className="w-full flex items-center justify-between px-4 py-3 bg-brand-bg border border-brand-border hover:bg-brand-border hover:text-brand-bg transition-all text-[10px] font-bold uppercase tracking-widest disabled:opacity-40"
+          >
+            <span>{extraBottomAction.label}</span>
+            {extraBottomAction.icon ?? <ScanSearch size={14} />}
+          </button>
         )}
 
         {!pdfOnly && (

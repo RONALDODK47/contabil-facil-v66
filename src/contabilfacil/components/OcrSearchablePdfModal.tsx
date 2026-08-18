@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Upload, FileText, Loader2, Download, X, ExternalLink, FolderOpen } from 'lucide-react';
-import { convertPdfToImages, processOcrImages } from '../../lib/ocrSearchablePdf';
+import { convertPdfToImages, processOcrImages, type OcrImagem } from '../../lib/ocrSearchablePdf';
 import { cn } from '../lib/utils';
 import ExtratoContaPicker, { type ExtratoPlanoContaOption, buildPlanoNomeLookup, resolveContaNome } from './ExtratoContaPicker';
 
@@ -100,7 +100,7 @@ export function OcrSearchablePdfModal({ onClose, onComplete, planoContaOptions =
     setError(null);
 
     try {
-      let images: string[] = [];
+      let images: OcrImagem[] = [];
       if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
         images = await convertPdfToImages(file);
       } else {

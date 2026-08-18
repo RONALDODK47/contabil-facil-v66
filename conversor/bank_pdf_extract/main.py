@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import traceback
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -43,7 +44,10 @@ import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from PIL import Image, ImageDraw
+import difflib
+import unicodedata
+
+from PIL import Image, ImageDraw, ImageOps
 
 BASE_DIR = Path(__file__).resolve().parent
 LAYOUTS_DIR = BASE_DIR / "layouts"
@@ -110,11 +114,13 @@ except ImportError:
 # ─── extração de palavras (texto nativo ou OCR) ────────────────────────────
 
 class Word:
-    __slots__ = ("text", "x0", "y0", "x1", "y1")
+    __slots__ = ("text", "x0", "y0", "x1", "y1", "line_key")
 
-    def __init__(self, text: str, x0: float, y0: float, x1: float, y1: float):
+    def __init__(self, text: str, x0: float, y0: float, x1: float, y1: float, line_key=None):
         self.text = text
         self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+        # (bloco, parágrafo, linha) do Tesseract, quando veio de OCR
+        self.line_key = line_key
 
 
 def _sanitize(text: str) -> str:
@@ -132,17 +138,55 @@ def _words_from_native_page(page: "fitz.Page") -> list[Word]:
     return words
 
 
-def _page_to_image(page: "fitz.Page", zoom: float = 2.6) -> Image.Image:
+def _page_to_image(page: "fitz.Page", zoom: float = 2.6, autocontrast: bool = False) -> Image.Image:
     mat = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=mat, alpha=False)
-    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    if autocontrast:
+        # Extrato fotografado: a folha fica acinzentada e o contraste do toner
+        # cai, apagando dígitos inteiros. Esticar a faixa tonal (escala de cinza
+        # + autocontraste) recupera esses dígitos. Medido contra este extrato
+        # Sicredi, é o que mais acerta — bem acima de nitidez (unsharp) e MUITO
+        # acima de limiarização adaptativa, que destrói os números finos.
+        img = ImageOps.autocontrast(img.convert("L"), cutoff=1)
+    return img
 
 
-def _words_from_ocr_page(page: "fitz.Page", zoom: float = 2.6) -> list[Word]:
+# Palavras já lidas pelo OCR, por (conteúdo do arquivo, página, parâmetros).
+# O /preview lê as primeiras páginas para o usuário conferir o mapeamento e, ao
+# confirmar, o /extract lia o documento inteiro de novo — refazendo do zero o OCR
+# das páginas que acabaram de ser lidas, o que fazia o botão de importar parecer
+# que estava começando tudo outra vez. Fica só em memória (nunca em disco): são
+# dados bancários, e o processo é local e de vida curta.
+_OCR_CACHE: "OrderedDict[tuple, list[Word]]" = OrderedDict()
+_OCR_CACHE_MAX_PAGINAS = 80
+
+
+def _ocr_cache_chave(doc_hash: Optional[str], page_idx: int, zoom: float,
+                     psm: Optional[int], autocontrast: bool) -> Optional[tuple]:
+    if not doc_hash:
+        return None
+    return (doc_hash, page_idx, zoom, psm, autocontrast, _TESSERACT_LANG)
+
+
+def _words_from_ocr_page(
+    page: "fitz.Page",
+    zoom: float = 2.6,
+    psm: Optional[int] = None,
+    autocontrast: bool = False,
+    doc_hash: Optional[str] = None,
+) -> list[Word]:
     if not _TESSERACT_READY:
         return []
-    img = _page_to_image(page, zoom=zoom)
-    data = pytesseract.image_to_data(img, lang=_TESSERACT_LANG, output_type=pytesseract.Output.DICT)
+    chave = _ocr_cache_chave(doc_hash, page.number, zoom, psm, autocontrast)
+    if chave is not None and chave in _OCR_CACHE:
+        _OCR_CACHE.move_to_end(chave)
+        return _OCR_CACHE[chave]
+    img = _page_to_image(page, zoom=zoom, autocontrast=autocontrast)
+    config = f"--psm {psm}" if psm is not None else ""
+    data = pytesseract.image_to_data(
+        img, lang=_TESSERACT_LANG, config=config, output_type=pytesseract.Output.DICT
+    )
     words = []
     n = len(data.get("text", []))
     for i in range(n):
@@ -156,7 +200,12 @@ def _words_from_ocr_page(page: "fitz.Page", zoom: float = 2.6) -> list[Word]:
         except (TypeError, ValueError):
             pass
         x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
-        words.append(Word(text, float(x), float(y), float(x + w), float(y + h)))
+        line_key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        words.append(Word(text, float(x), float(y), float(x + w), float(y + h), line_key))
+    if chave is not None:
+        _OCR_CACHE[chave] = words
+        while len(_OCR_CACHE) > _OCR_CACHE_MAX_PAGINAS:
+            _OCR_CACHE.popitem(last=False)
     return words
 
 
@@ -404,16 +453,59 @@ def _rows_from_caixa_app_pdf(doc: "fitz.Document", max_rows: int, max_pages: Opt
 
 SICREDI_FINGERPRINT = "sicredi_extrato_v1"
 
-SICREDI_BANDS: list[tuple[str, float, float]] = [
-    ("data",      0.090, 0.175),
-    ("descricao", 0.175, 0.614),
-    ("documento", 0.614, 0.750),
-    ("valor",     0.750, 0.862),
-    ("saldo",     0.862, 1.000),
-]
+# Resolução e segmentação do OCR para o extrato Sicredi fotografado. PSM 6
+# ("um bloco uniforme de texto") mantém cada lançamento numa linha só; a
+# segmentação automática quebra a tabela em blocos e embaralha as colunas.
+_SICREDI_ZOOM = 2.0
+_SICREDI_PSM = 6
 
-_SICREDI_COMPLEMENTO_X_MIN = 0.430
-_SICREDI_COMPLEMENTO_X_MAX = 0.614
+# Faixas horizontais só das colunas de texto (fração da largura da página).
+# Valor e Saldo NÃO entram aqui — ver _sicredi_linhas.
+_SICREDI_DATA_MAX = 0.17
+_SICREDI_DESCRICAO_MAX = 0.60
+_SICREDI_DOCUMENTO_MAX = 0.72
+
+# Um valor monetário impresso, possivelmente com rabisco grudado. Aceita ponto
+# OU vírgula como separador de milhar porque o OCR troca um pelo outro direto.
+_SICREDI_MONEY = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d{3})*,\d{2})(?!\d)")
+_SICREDI_MONEY_SOLTO = re.compile(r"\d[\d.,]*,\d{2}")
+_SICREDI_DATA = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
+
+# "Lançamentos Futuros (Próximos 30 dias)": previsão de débitos a vencer,
+# impressa depois do extrato e sem coluna Saldo — não é movimentação da conta.
+# O C-cedilha sai como C, G ou Q no OCR.
+_SICREDI_FUTUROS = re.compile(r"LAN[CGQ]AMENTOS?\s+FUTUROS")
+
+# Histórico → sinal esperado do lançamento. Serve de trava contra saldo lido
+# errado: um "APLICACAO FINANCEIRA" que apareça aumentando o saldo denuncia que
+# o número foi lido errado. Só entram termos sem ambiguidade — "TED", por
+# exemplo, fica de fora porque pode ser enviada ou recebida.
+_SICREDI_DEBITO = ("PAGAMENTO", "TARIFA", "DEBITO", "APLICACAO", "SAQUE", "COMPRA",
+                   "IOF", "IMPOSTO", "LIQUIDACAO BOLETO")
+_SICREDI_CREDITO = ("RECEBIMENTO", "LIQ.COBRAN", "LIQ COBRAN", "DEPOSITO", "RESG",
+                    "RENDIMENTO", "ESTORNO")
+
+_SALDO_TOLERANCIA = 0.011
+
+# Letras que o Tesseract devolve no lugar de dígitos dentro dos números do
+# extrato. Mapa próprio (mais largo que o _fix_ocr_digits usado no layout
+# CAIXA) porque aqui o rabisco de caneta encosta nos algarismos.
+_SICREDI_LETRA_DIGITO = str.maketrans({
+    "O": "0", "o": "0", "D": "0", "Q": "0",
+    "l": "1", "I": "1", "i": "1", "|": "1", "!": "1",
+    "Z": "2", "z": "2",
+    "A": "4",
+    "S": "5", "s": "5",
+    "G": "6", "b": "6",
+    "T": "7",
+    "B": "8",
+    "g": "9", "q": "9",
+})
+
+
+def _sem_acento(texto: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", texto)
+                   if unicodedata.category(c) != "Mn")
 
 
 def _is_sicredi_layout(words: list[Word]) -> bool:
@@ -421,108 +513,334 @@ def _is_sicredi_layout(words: list[Word]) -> bool:
     return "SICREDI" in joined and ("EXTRATO" in joined or "PERIODO" in joined or "PERÍODO" in joined)
 
 
-def _parse_sicredi_valor(raw: str) -> tuple[Optional[float], Optional[str]]:
-    text = _fix_ocr_digits(raw.strip())
-    if not text:
-        return None, None
-    negative = text.startswith("-") or "(" in text
-    m = re.search(r"([\d.]*\d[\d.]*,\d{2})", text)
-    if not m:
-        return None, None
+def _sicredi_valor(raw: str) -> tuple[Optional[float], bool, str]:
+    """(valor, bem_formado, dígitos) de um número monetário lido pelo OCR."""
+    if not raw:
+        return None, False, ""
+    texto = raw.strip().translate(_SICREDI_LETRA_DIGITO)
+    negativo = texto.lstrip().startswith(("-", "~", "–", "—"))
+    texto = re.sub(r"[^0-9.,]", "", texto)
+    if not texto:
+        return None, False, ""
+    m = _SICREDI_MONEY.search(texto)
+    if m:
+        token = m.group(1)
+        # "000,00" no lugar de "10.000,00": zero à esquerda denuncia dígito
+        # comido pelo OCR — o extrato nunca imprime saldo com zero à esquerda.
+        bem_formado = not re.match(r"0\d", token)
+    else:
+        m = _SICREDI_MONEY_SOLTO.search(texto)
+        if not m:
+            return None, False, ""
+        token, bem_formado = m.group(0), False
+    # Separador de milhar pode sair como vírgula ("-13,691,72"): só o último
+    # separador é o decimal.
+    inteiro, _, decimal = token.rpartition(",")
+    inteiro = re.sub(r"[^0-9]", "", inteiro) or "0"
     try:
-        value = float(m.group(1).replace(".", "").replace(",", "."))
+        valor = float(inteiro + "." + decimal)
     except ValueError:
-        return None, None
-    if value == 0:
-        return None, None
-    return value, ("D" if negative else "C")
+        return None, False, ""
+    return (-valor if negativo else valor), bem_formado, inteiro + decimal
 
 
-def _rows_from_sicredi_pdf(doc: "fitz.Document", max_rows: int, max_pages: Optional[int] = None) -> tuple[list[list[str]], int, dict]:
-    """Produz linhas limpas: [Data, Histórico, Débito, Crédito, Complemento]."""
-    clean_rows: list[list[str]] = []
-    _ZOOM = 1.4  # escaneado já tem boa resolução — zoom menor = OCR 3x mais rápido
+def _sicredi_digitos(valor: float) -> str:
+    return re.sub(r"[^0-9]", "", "%.2f" % abs(valor))
+
+
+def _sicredi_perto(a: float, b: float) -> bool:
+    return abs(a - b) <= _SALDO_TOLERANCIA
+
+
+def _sicredi_sinal_esperado(historico: str) -> int:
+    h = re.sub(r"\s+", " ", _sem_acento(historico).upper())
+    for kw in _SICREDI_CREDITO:
+        if kw in h:
+            return 1
+    for kw in _SICREDI_DEBITO:
+        if kw in h:
+            return -1
+    return 0
+
+
+def _sicredi_sinal_ok(delta: float, historico: str) -> bool:
+    esperado = _sicredi_sinal_esperado(historico)
+    if esperado == 0 or abs(delta) < 0.005:
+        return True
+    return (delta > 0) == (esperado > 0)
+
+
+# Rótulos que o Sicredi imprime sempre iguais. O OCR come o espaço entre as
+# palavras ("TARIFACOMR LIQUIDACAO") e isso atrapalha o casamento das regras de
+# conta, que procuram o texto do histórico. Recompor o espaçamento de um rótulo
+# fixo não inventa dado nenhum — só desfaz um erro de leitura.
+_SICREDI_HISTORICOS = [
+    "LIQ.COBRANCA SIMPLES",
+    "TARIFA COM R LIQUIDACAO",
+    "TARIFA BAIXA DE TITULOS",
+    "APLICACAO FINANCEIRA",
+    "RESG.APLIC FIN AVISO PREV",
+    "LIQUIDACAO BOLETO SICREDI",
+    "DEBITO CONVENIOS",
+    "RECEBIMENTO PIX",
+    "PAGAMENTO PIX",
+    "DEBITO AUTOMATICO",
+]
+
+
+def _so_letras(texto: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", _sem_acento(texto).upper())
+
+
+def _sicredi_historico_canonico(historico: str) -> str:
+    """Recompõe o rótulo padrão do banco quando o OCR grudou/trocou os espaços."""
+    limpo = re.sub(r"\s+", " ", historico).strip(" .-—–|")
+    achatado = _so_letras(limpo)
+    for padrao in _SICREDI_HISTORICOS:
+        alvo = _so_letras(padrao)
+        pos = achatado.find(alvo)
+        if pos < 0:
+            # Letra trocada pelo OCR ("LIO.COBRANCA" no lugar de
+            # "LIQ.COBRANCA"): aceita o rótulo quase idêntico, mas só bem no
+            # começo e com semelhança alta, para nunca confundir dois rótulos
+            # diferentes entre si — PAGAMENTO PIX x RECEBIMENTO PIX dá 0,69 e
+            # é recusado.
+            for inicio in range(0, 4):
+                trecho = achatado[inicio:inicio + len(alvo)]
+                if len(trecho) < len(alvo):
+                    break
+                if difflib.SequenceMatcher(None, trecho, alvo).ratio() >= 0.88:
+                    pos = inicio
+                    break
+        # só corrige se o rótulo estiver no começo (tolerando lixo de OCR antes)
+        if pos < 0 or pos > 3:
+            continue
+        # devolve o rótulo canônico + o que vinha depois dele no texto original
+        consumidos = 0
+        idx = 0
+        for idx, ch in enumerate(limpo):
+            if re.match(r"[A-Za-z0-9]", _sem_acento(ch)):
+                consumidos += 1
+                if consumidos == pos + len(alvo):
+                    idx += 1
+                    break
+        resto = limpo[idx:].strip()
+        return (padrao + " " + resto).strip() if resto else padrao
+    return limpo
+
+
+def _sicredi_linhas(doc: "fitz.Document", max_pages: Optional[int] = None,
+                    doc_hash: Optional[str] = None) -> list[dict]:
+    """Recorta cada linha do extrato em data/descrição/documento/valor/saldo.
+
+    As colunas Valor e Saldo não são recortadas por faixa fixa da largura: cada
+    página é uma foto, com enquadramento e inclinação próprios, e uma faixa fixa
+    junta as duas colunas numa célula só (lendo "143.871,33" e "153.871,33" como
+    um número só). Em vez disso, a borda direita da coluna Saldo é calibrada com
+    as próprias linhas da página — ela é impressa alinhada à direita —, e o Valor
+    é o número monetário imediatamente à esquerda dela.
+    """
+    linhas_extrato: list[dict] = []
     for page_idx, page in enumerate(doc):
         if max_pages is not None and page_idx >= max_pages:
             break
-        words = _words_from_ocr_page(page, zoom=_ZOOM)
+        words = _words_from_ocr_page(
+            page, zoom=_SICREDI_ZOOM, psm=_SICREDI_PSM, autocontrast=True, doc_hash=doc_hash
+        )
         if not words:
             continue
-        img_width = page.rect.width * _ZOOM
-        lines = _group_into_lines(words, y_tol=15.0)
+        largura = page.rect.width * _SICREDI_ZOOM
 
-        bucketed: list[dict[str, str]] = []
-        for line in lines:
-            cells: dict[str, str] = {label: "" for label, _, _ in SICREDI_BANDS}
-            comp_parts: list[str] = []
-            for w in line:
-                xfrac = w.x0 / img_width if img_width else 0.0
-                placed = False
-                for label, s, e in SICREDI_BANDS:
-                    if s <= xfrac < e:
-                        cells[label] = (cells[label] + " " + w.text).strip() if cells[label] else w.text
-                        placed = True
-                        break
-                if not placed and _SICREDI_COMPLEMENTO_X_MIN <= xfrac < _SICREDI_COMPLEMENTO_X_MAX:
-                    comp_parts.append(w.text)
-            cells["_comp"] = " ".join(comp_parts).strip()
-            bucketed.append(cells)
+        agrupadas: dict = {}
+        for w in words:
+            agrupadas.setdefault(w.line_key, []).append(w)
+        ordem = sorted(agrupadas, key=lambda k: min(w.y0 for w in agrupadas[k]))
 
-        groups: list[list[dict]] = []
-        cur: list[dict] = []
-        for cells in bucketed:
-            if re.search(r"\d{2}/\d{2}/\d{4}", cells["data"]):
-                if cur:
-                    groups.append(cur)
-                cur = [cells]
-            elif cur:
-                cur.append(cells)
-        if cur:
-            groups.append(cur)
+        bordas = []
+        for key in ordem:
+            direitas = [w.x1 for w in agrupadas[key]
+                        if _SICREDI_MONEY.search(w.text) and w.x0 / largura > 0.55]
+            if direitas:
+                bordas.append(max(direitas))
+        if not bordas:
+            continue
+        saldo_direita = sorted(bordas)[len(bordas) // 2]
+        tolerancia = largura * 0.045
 
-        for group in groups:
-            first = group[0]
-            dm = re.search(r"\d{2}/\d{2}/\d{4}", first["data"])
-            if not dm:
+        for key in ordem:
+            linha = sorted(agrupadas[key], key=lambda w: w.x0)
+            dinheiro = [w for w in linha
+                        if _SICREDI_MONEY.search(w.text) and w.x0 / largura > 0.55]
+            na_coluna_saldo = [w.text for w in dinheiro
+                               if abs(w.x1 - saldo_direita) <= tolerancia]
+            a_esquerda = [w.text for w in dinheiro if w.x1 < saldo_direita - tolerancia]
+
+            # Data e histórico saem juntos e só depois são separados pela regex
+            # da data. Uma fronteira fixa entre as duas colunas não serve: cada
+            # página é uma foto com enquadramento próprio, e nas deslocadas o
+            # começo do histórico cai do lado da data e era descartado — virava
+            # "SIMPLES" no lugar de "LIQ.COBRANCA SIMPLES", "FINANCEIRA" no
+            # lugar de "APLICACAO FINANCEIRA".
+            cabeca, documento = [], []
+            for w in linha:
+                frac = w.x0 / largura
+                if frac < _SICREDI_DESCRICAO_MAX:
+                    cabeca.append(w.text)
+                elif frac < _SICREDI_DOCUMENTO_MAX:
+                    documento.append(w.text)
+
+            cabeca_txt = " ".join(cabeca).strip()
+            dm = _SICREDI_DATA.search(cabeca_txt)
+            historico = (cabeca_txt[:dm.start()] + " " + cabeca_txt[dm.end():]) if dm else cabeca_txt
+
+            linhas_extrato.append({
+                "data": dm.group(0) if dm else "",
+                "descricao": _sicredi_historico_canonico(historico),
+                "documento": " ".join(documento).strip(),
+                "valor": a_esquerda[-1] if a_esquerda else "",
+                "saldo": na_coluna_saldo[-1] if na_coluna_saldo else "",
+                "texto": " ".join(w.text for w in linha),
+            })
+    return linhas_extrato
+
+
+def _sicredi_lancamentos(linhas: list[dict]) -> tuple[Optional[float], list[dict]]:
+    saldo_anterior: Optional[float] = None
+    lancamentos: list[dict] = []
+    for linha in linhas:
+        if _SICREDI_FUTUROS.search(_sem_acento(linha["texto"]).upper()):
+            break
+        descricao_up = linha["descricao"].upper()
+        if saldo_anterior is None and "SALDO" in descricao_up and "ANTERIOR" in descricao_up:
+            saldo_anterior = _sicredi_valor(linha["saldo"])[0]
+            continue
+        dm = _SICREDI_DATA.search(linha["data"])
+        if not dm or _is_saldo_line(descricao_up):
+            continue
+        saldo, saldo_ok, saldo_digitos = _sicredi_valor(linha["saldo"])
+        valor, valor_ok, _ = _sicredi_valor(linha["valor"])
+        lancamentos.append({
+            "data": dm.group(0),
+            "descricao": linha["descricao"].strip(),
+            "documento": linha["documento"].strip(),
+            "saldo": saldo, "saldo_ok": saldo_ok, "saldo_digitos": saldo_digitos,
+            "valor": valor, "valor_ok": valor_ok,
+        })
+    return saldo_anterior, lancamentos
+
+
+def _sicredi_concilia(saldo_anterior: Optional[float], lancamentos: list[dict]) -> list[dict]:
+    """Fecha o valor de cada lançamento pela cadeia de saldos.
+
+    A coluna Saldo é a fonte primária: no extrato fotografado ela fica na borda
+    direita da folha, longe das anotações à caneta que cobrem a coluna Valor. O
+    valor de cada lançamento sai da diferença entre saldos consecutivos — o que
+    também recupera o sinal, que o OCR perde com frequência (o "-" some, ou vira
+    "+"/"7"). A coluna Valor entra só como testemunha, para corrigir o saldo nos
+    casos em que ele quebra a cadeia.
+    """
+    anterior = saldo_anterior if saldo_anterior is not None else 0.0
+    resultado: list[dict] = []
+    for i, lanc in enumerate(lancamentos):
+        seguinte = lancamentos[i + 1] if i + 1 < len(lancamentos) else None
+        seguinte_ok = bool(
+            seguinte and seguinte["saldo"] is not None and seguinte["saldo_ok"]
+            and seguinte["valor"] is not None and seguinte["valor_ok"]
+        )
+        valor = lanc["valor"]
+        valor_ok = valor is not None and lanc["valor_ok"]
+        base = anterior
+
+        def confirma_seguinte(c: float) -> bool:
+            return seguinte_ok and _sicredi_perto(abs(seguinte["saldo"] - c), abs(seguinte["valor"]))
+
+        def confirma_valor(c: float) -> bool:
+            return valor_ok and _sicredi_perto(abs(c - base), abs(valor))
+
+        saldo = lanc["saldo"]
+        if saldo is not None and lanc["saldo_ok"] and _sicredi_sinal_ok(saldo - base, lanc["descricao"]):
+            if not confirma_valor(saldo):
+                if confirma_valor(-saldo):
+                    # O "-" impresso some com frequência no OCR. Só inverte o
+                    # sinal se a própria coluna Valor confirmar o saldo invertido.
+                    saldo = -saldo
+                elif seguinte_ok:
+                    # Dígito comido/sobrando: aceita um saldo reconstruído pela
+                    # linha seguinte se a coluna Valor desta linha o confirmar,
+                    # ou se ele for sósia do que o OCR leu aqui (mesmo número com
+                    # um dígito de diferença) — nunca um número qualquer.
+                    melhor = None
+                    for c in (seguinte["saldo"] - abs(seguinte["valor"]),
+                              seguinte["saldo"] + abs(seguinte["valor"])):
+                        if not confirma_seguinte(c):
+                            continue
+                        semelhanca = difflib.SequenceMatcher(
+                            None, _sicredi_digitos(c), lanc["saldo_digitos"]).ratio()
+                        peso = (confirma_valor(c), semelhanca)
+                        if (peso[0] or semelhanca >= 0.90) and (melhor is None or peso > melhor[0]):
+                            melhor = (peso, c)
+                    if melhor:
+                        saldo = melhor[1]
+        else:
+            # Saldo ilegível (rabisco por cima, borrão) ou incoerente com o
+            # histórico: reconstrói pela linha seguinte, e só recorre à coluna
+            # Valor desta linha se a seguinte não ajudar.
+            candidatos: list[float] = []
+            if seguinte_ok:
+                candidatos += [seguinte["saldo"] - abs(seguinte["valor"]),
+                               seguinte["saldo"] + abs(seguinte["valor"])]
+            if valor_ok:
+                candidatos += [base + valor, base - valor]
+            if saldo is not None:
+                candidatos.append(saldo)
+            if not candidatos:
                 continue
-            historico = first["descricao"].strip()
-            if _is_saldo_line(historico):
-                continue
 
-            valor_raw, doc_num, comp_parts = "", "", []
-            if first["_comp"]:
-                comp_parts.append(first["_comp"])
+            def peso(c: float) -> tuple:
+                seguinte_coerente = (not seguinte_ok) or _sicredi_sinal_ok(
+                    seguinte["saldo"] - c, seguinte["descricao"])
+                # O "-" lido pelo OCR na linha seguinte é confiável quando
+                # aparece: ele some com frequência, mas raramente é inventado.
+                menos_lido = seguinte_ok and ((seguinte["saldo"] - c >= 0) == (seguinte["valor"] >= 0))
+                return (_sicredi_sinal_ok(c - base, lanc["descricao"]), seguinte_coerente,
+                        confirma_seguinte(c), confirma_valor(c), menos_lido)
 
-            for extra in group[1:]:
-                if extra["valor"] and not valor_raw:
-                    valor_raw = extra["valor"]
-                if extra["documento"] and not doc_num:
-                    doc_num = extra["documento"]
-                if extra["_comp"]:
-                    comp_parts.append(extra["_comp"])
-                if extra["descricao"] and not re.search(r"\d{2}/\d{2}/\d{4}", extra["data"]):
-                    comp_parts.append(extra["descricao"])
+            saldo = max(candidatos, key=peso)
 
-            if not valor_raw:
-                continue
+        lanc["montante"] = round(saldo - base, 2)
+        lanc["saldo_final"] = round(saldo, 2)
+        resultado.append(lanc)
+        anterior = saldo
+    return resultado
 
-            valor, natureza = _parse_sicredi_valor(valor_raw)
-            if valor is None or natureza not in ("D", "C"):
-                continue
 
-            complemento = " ".join(p for p in comp_parts if p).strip()
-            if doc_num:
-                complemento = (doc_num + " " + complemento).strip() if complemento else doc_num
+def _rows_from_sicredi_pdf(doc: "fitz.Document", max_rows: int, max_pages: Optional[int] = None,
+                           doc_hash: Optional[str] = None) -> tuple[list[list[str]], int, dict]:
+    """Produz linhas limpas: [Data, Histórico, Débito, Crédito, Complemento]."""
+    linhas = _sicredi_linhas(doc, max_pages=max_pages, doc_hash=doc_hash)
+    saldo_anterior, lancamentos = _sicredi_lancamentos(linhas)
+    conciliados = _sicredi_concilia(saldo_anterior, lancamentos)
 
-            debito = ("%.2f" % valor).replace(".", ",") if natureza == "D" else ""
-            credito = ("%.2f" % valor).replace(".", ",") if natureza == "C" else ""
-            clean_rows.append([dm.group(0), historico, debito, credito, complemento])
-            if len(clean_rows) >= max_rows:
-                break
+    clean_rows: list[list[str]] = []
+    for lanc in conciliados:
+        montante = lanc["montante"]
+        if montante == 0:
+            continue
+        texto = ("%.2f" % abs(montante)).replace(".", ",")
+        debito = texto if montante < 0 else ""
+        credito = texto if montante > 0 else ""
+        clean_rows.append([lanc["data"], lanc["descricao"], debito, credito, lanc["documento"]])
         if len(clean_rows) >= max_rows:
             break
 
-    stats = {"paginas": doc.page_count, "linhas": len(clean_rows), "modo": "ocr (layout Sicredi reconhecido)"}
+    stats = {
+        "paginas": doc.page_count,
+        "linhas": len(clean_rows),
+        "modo": "ocr (layout Sicredi reconhecido)",
+    }
+    if conciliados:
+        stats["saldo_anterior"] = saldo_anterior
+        stats["saldo_final"] = conciliados[-1]["saldo_final"]
     return clean_rows, 5, stats
 
 
@@ -600,13 +918,19 @@ def _rows_from_pdf(
     else:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
+    # Identidade do conteúdo: deixa o /extract reaproveitar o OCR que o /preview
+    # acabou de fazer, em vez de reler o documento inteiro do zero.
+    doc_hash = hashlib.sha1(pdf_bytes).hexdigest()
+
     if use_ocr != "no" and doc.page_count > 0:
-        first_words = _words_from_native_page(doc[0]) or _words_from_ocr_page(doc[0], zoom=1.4)
+        first_words = (_words_from_native_page(doc[0])
+                       or _words_from_ocr_page(doc[0], zoom=1.4, doc_hash=doc_hash))
         if _is_caixa_app_layout(first_words):
             rows, n_cols, stats = _rows_from_caixa_app_pdf(doc, max_rows, max_pages=max_pages)
             return rows, n_cols, stats, doc
         if _is_sicredi_layout(first_words):
-            rows, n_cols, stats = _rows_from_sicredi_pdf(doc, max_rows, max_pages=max_pages)
+            rows, n_cols, stats = _rows_from_sicredi_pdf(
+                doc, max_rows, max_pages=max_pages, doc_hash=doc_hash)
             return rows, n_cols, stats, doc
 
     all_lines: list[list[Word]] = []
@@ -772,9 +1096,14 @@ def health():
 @app.post("/preview")
 async def preview(
     file: UploadFile = File(...),
-    max_rows: int = Form(400),
+    max_rows: int = Form(2000),
     use_ocr: str = Form("auto"),
-    max_pages: int = Form(3),
+    # Lê o extrato inteiro, não só as primeiras páginas: o preview mostrava 96
+    # lançamentos de um extrato de 102 e passava a impressão de que a extração
+    # tinha perdido linhas. Agora que o OCR fica em cache por conteúdo, ler tudo
+    # aqui não custa nada a mais no total — é o /extract seguinte que sai de
+    # graça, em vez de reler o documento do zero.
+    max_pages: int = Form(40),
 ):
     pdf_bytes = await file.read()
     fname = _sanitize(file.filename or "")

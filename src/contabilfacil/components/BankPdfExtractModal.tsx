@@ -194,9 +194,10 @@ export function BankPdfExtractModal({
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  // Filtro de período (opcional) — pode vir pré-preenchido da etapa anterior de OCR
-  const [filtroDataInicio, setFiltroDataInicio] = useState(initialDataInicio);
-  const [filtroDataFim, setFiltroDataFim] = useState(initialDataFim);
+  // Filtro de período (opcional) — definido na etapa anterior, no conversor de
+  // OCR; esta tela só o repassa ao servidor.
+  const filtroDataInicio = initialDataInicio;
+  const filtroDataFim = initialDataFim;
 
   // Saldo anterior + totais (mostrados após a extração)
   const [saldoAnteriorText, setSaldoAnteriorText] = useState('');
@@ -212,7 +213,10 @@ export function BankPdfExtractModal({
   // Mapeamento de colunas
   const [colRoles, setColRoles] = useState<(ColRole)[]>([]);
   const [skipRows, setSkipRows] = useState(0);
-  const [selectedRole, setSelectedRole] = useState<ColRole>('data');
+  // Papel aplicado ao clicar no cabeçalho de uma coluna ainda não mapeada. O
+  // mapeamento chega pronto do layout aprendido pelo OCR; o clique serve para
+  // acertar a coluna de data quando o layout é novo.
+  const selectedRole: ColRole = 'data';
 
   // Banco / conta (para salvar na conciliação) — normalmente já vêm preenchidos
   // da etapa anterior de upload (Identificação do Extrato).
@@ -247,7 +251,7 @@ export function BankPdfExtractModal({
     const load = async () => {
       const fd = new FormData();
       fd.append('file', file);
-      fd.append('max_rows', '400');
+      fd.append('max_rows', '2000');
       fd.append('use_ocr', 'auto');
 
       try {
@@ -497,8 +501,6 @@ export function BankPdfExtractModal({
 
   const roleOfCol = (i: number): ColRole => colRoles[i] ?? null;
 
-  const ROLE_CYCLE: NonNullable<ColRole>[] = ['data', 'historico', 'debito', 'credito', 'complemento'];
-
   return (
     <div className="fixed inset-0 z-[120] bg-brand-bg font-sans text-brand-text flex flex-col antialiased overflow-hidden">
 
@@ -530,7 +532,7 @@ export function BankPdfExtractModal({
       </header>
 
       {/* Body */}
-      <main className="flex-1 overflow-auto px-6 py-5 flex flex-col gap-5">
+      <main className="flex-1 min-h-0 overflow-auto px-6 py-5 flex flex-col gap-5">
 
         {/* Loading */}
         {stage === 'loading' && (
@@ -624,84 +626,6 @@ export function BankPdfExtractModal({
             </div>
             )}
 
-            {/* Filtro de período */}
-            <div className="bg-white border border-brand-border p-4 flex flex-col gap-3">
-              <h3 className="text-xs font-bold text-brand-text/60 uppercase tracking-wider mb-1">Filtrar por período (opcional)</h3>
-              <p className="text-[11px] text-brand-text/50 mb-2">
-                Se o arquivo tiver mais de um mês, informe as datas para extrair só o intervalo desejado. Deixe em branco para extrair tudo.
-              </p>
-              <div className="flex flex-wrap gap-3">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-semibold text-brand-text/70">De</label>
-                  <input
-                    type="date"
-                    value={filtroDataInicio}
-                    onChange={(e) => setFiltroDataInicio(e.target.value)}
-                    max={filtroDataFim || undefined}
-                    className="technical-input text-xs px-2 py-1.5"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-semibold text-brand-text/70">Até</label>
-                  <input
-                    type="date"
-                    value={filtroDataFim}
-                    onChange={(e) => setFiltroDataFim(e.target.value)}
-                    min={filtroDataInicio || undefined}
-                    className="technical-input text-xs px-2 py-1.5"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Instruções + seletor de role */}
-            <div className="bg-white border border-brand-border p-4 flex flex-col gap-3">
-              <h3 className="text-xs font-bold text-brand-text/60 uppercase tracking-wider">Mapeamento de Colunas</h3>
-              <p className="text-[11px] text-brand-text/60 leading-relaxed">
-                Selecione o tipo de coluna no painel à esquerda e depois clique no cabeçalho da coluna correspondente na tabela.
-                Para remover, clique novamente na mesma coluna já mapeada.
-              </p>
-
-              {/* Role buttons */}
-              <div className="flex flex-wrap gap-2">
-                {ROLE_CYCLE.map((role) => {
-                  const assignedCol = colRoles.findIndex((r) => r === role);
-                  return (
-                    <button
-                      key={role}
-                      type="button"
-                      onClick={() => setSelectedRole(role)}
-                      className={`px-3 py-1.5 text-[11px] font-bold border ${
-                        selectedRole === role
-                          ? 'bg-brand-text text-brand-bg border-brand-text'
-                          : 'bg-white border-brand-border text-brand-text/60'
-                      }`}
-                    >
-                      {ROLE_LABELS[role]}
-                      {assignedCol >= 0 && (
-                        <span className="ml-1 opacity-60">(col {assignedCol})</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Skip header rows */}
-              <div className="flex items-center gap-3">
-                <label className="text-[11px] font-semibold text-brand-text/70 whitespace-nowrap">
-                  Linhas de cabeçalho a ignorar:
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={20}
-                  value={skipRows}
-                  onChange={(e) => setSkipRows(Math.max(0, Number(e.target.value)))}
-                  className="technical-input text-xs w-16 px-2 py-1"
-                />
-              </div>
-            </div>
-
             {/* Saldo anterior + Totais ao vivo (Débito/Crédito mapeados) */}
             {(colRoles.includes('debito') || colRoles.includes('credito')) && (
               <div className="grid grid-cols-4 gap-2">
@@ -740,8 +664,9 @@ export function BankPdfExtractModal({
               </div>
             )}
 
-            {/* Tabela de preview */}
-            <div className="bg-white border border-brand-border overflow-x-auto overflow-y-auto max-h-[560px]">
+            {/* Tabela de preview — cresce para ocupar o que sobra da janela, com
+                piso de 20 lançamentos visíveis antes de precisar rolar. */}
+            <div className="bg-white border border-brand-border overflow-x-auto overflow-y-auto flex-1 min-h-[520px]">
               <table className="w-full text-[11px] font-mono border-collapse">
                 <thead className="sticky top-0 z-10">
                   <tr className="bg-brand-sidebar">

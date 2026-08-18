@@ -105,7 +105,14 @@ import {
   buildTxtPlusFromExtratoRows,
   buildTxtPlusFromFolhaRelatorio,
   downloadTxtPlusDominio,
+  type ExtratoExportRow,
 } from '../logic/dominioTxtIO';
+import { loadAplicacaoContasExtrato } from '../logic/aplicacaoExtratoStorage';
+import {
+  filterAplicacaoRegrasPorConta,
+  loadAplicacaoRegrasContas,
+} from '../logic/aplicacaoRegrasContasStorage';
+import { buildAplicacaoLancamentoContabil } from '../logic/aplicacaoExtratoLancamentos';
 import { buildTxtPlusFromCustos, loadCustos } from '../logic/custosStorage';
 import { prepareBalanceteTxtExport } from '../logic/balanceteTxtExport';
 import {
@@ -2605,8 +2612,84 @@ export default function ManagerModule({
               `O arquivo será baixado mesmo assim, só sem essas linhas.`,
           );
         }
+      } else if (activeSubTab === 'aplicacoes') {
+        const contasAplic = loadAplicacaoContasExtrato(selectedCompany);
+        const regrasAplic = loadAplicacaoRegrasContas(selectedCompany);
+        const exportRows: ExtratoExportRow[] = [];
+        const semContrapartida: { conta: string; data: string; historico: string; valor: number; motivo: string }[] = [];
+        // O TXT do Domínio só aceita código reduzido numérico. Uma aplicação sem
+        // conta contábil cai no próprio nome, que o exportador descartaria em
+        // silêncio — aqui a linha é barrada antes, com o motivo à vista.
+        const codigoValido = (c: string) => /\d/.test(c) && !/[^\d\s.-]/.test(c);
+
+        for (const conta of contasAplic) {
+          const regrasDaConta = filterAplicacaoRegrasPorConta(regrasAplic, conta.nome);
+          for (const row of conta.rows) {
+            const lanc = buildAplicacaoLancamentoContabil(row, conta, regrasDaConta);
+            // Provisão bloqueada não é movimento do mês: fica fora do arquivo e
+            // nem é listada como pendência — a decisão de não lançar já foi
+            // tomada na tela.
+            if (!lanc.contabiliza) continue;
+            // O TXT do Domínio exige as duas pontas. Sem regra de conciliação só
+            // existe o lado da aplicação, então a linha não tem como ser gerada.
+            const motivo = !lanc.debito || !lanc.credito
+              ? 'sem contrapartida (falta regra de conciliação)'
+              : !codigoValido(lanc.debito) || !codigoValido(lanc.credito)
+                ? 'conta sem código reduzido — informe a conta contábil da aplicação'
+                : '';
+            if (motivo) {
+              semContrapartida.push({
+                conta: conta.nome,
+                data: lanc.data,
+                historico: lanc.historico,
+                valor: lanc.valor,
+                motivo,
+              });
+              continue;
+            }
+            exportRows.push({
+              date: lanc.data,
+              description: lanc.historico,
+              value: lanc.valor,
+              nature: lanc.nature,
+              accountDebit: lanc.debito,
+              accountCredit: lanc.credito,
+              operationName: lanc.historico,
+            });
+          }
+        }
+
+        if (exportRows.length === 0) {
+          const motivos = [...new Set(semContrapartida.map((n) => n.motivo))].join(' · ');
+          alert(
+            contasAplic.length === 0
+              ? 'Nenhuma aplicação com lançamentos para exportar. Extraia um extrato em "Extração de Dados".'
+              : `Nenhum lançamento de aplicação pôde ser exportado (${semContrapartida.length}). ` +
+                `Motivo: ${motivos || 'lançamentos sem valor'}.`,
+          );
+          return;
+        }
+
+        content = buildTxtPlusFromExtratoRows(exportRows);
+        filename = 'aplicacoes_dominio_txtplus.txt';
+
+        if (semContrapartida.length > 0) {
+          const linhas = semContrapartida
+            .slice(0, 15)
+            .map(
+              (n) =>
+                `• ${n.conta} · ${n.data} · R$ ${n.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · ${n.historico} — ${n.motivo}`,
+            )
+            .join('\n');
+          const resto =
+            semContrapartida.length > 15 ? `\n… e mais ${semContrapartida.length - 15} lançamento(s).` : '';
+          alert(
+            `ATENÇÃO: ${semContrapartida.length} lançamento(s) de aplicação NÃO entraram no TXT:\n\n${linhas}${resto}\n\n` +
+              `O arquivo será baixado mesmo assim, só sem essas linhas.`,
+          );
+        }
       } else {
-        alert('Exportação disponível nas abas Extrato, Plano de Contas, Razão/Balancete, Folha e Custos.');
+        alert('Exportação disponível nas abas Extrato, Aplicações, Plano de Contas, Razão/Balancete, Folha e Custos.');
         return;
       }
 

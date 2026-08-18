@@ -149,11 +149,36 @@ function contaDominioNum(conta: string): string {
   return conta.replace(/^0+(?=\d)/, '');
 }
 
+/**
+ * Saldo da conta que vazou para o fim do histórico na leitura do extrato —
+ * ex.: "PAGAMENTO PIX 01852649135 RODRIGO RODRIGUES DA S -687,90". É sempre o
+ * saldo DEVEDOR do dia (por isso o sinal negativo obrigatório), o mesmo valor
+ * que dispara o lançamento automático de garantia logo em seguida.
+ *
+ * O sinal é a salvaguarda: um histórico pode legitimamente terminar em valor
+ * ("PAGAMENTO NF 1234 1.500,00") e esse não é tocado — só o token assinado sai.
+ */
+const RE_SALDO_VAZADO_NO_FIM = /\s[-+]\d{1,3}(?:\.\d{3})*,\d{2}\s*$/;
+
+function limparSaldoVazado(texto: string): string {
+  let out = texto;
+  // Pode ter vazado mais de um saldo na mesma linha (dias encadeados).
+  while (RE_SALDO_VAZADO_NO_FIM.test(out)) {
+    const cortado = out.replace(RE_SALDO_VAZADO_NO_FIM, '').trim();
+    // Nunca esvazia o histórico: se não sobrar texto, mantém o original.
+    if (!/[A-Za-zÀ-ÿ]/.test(cortado)) break;
+    out = cortado;
+  }
+  return out;
+}
+
 function histKeyDominio(nome: string | undefined): string {
-  return String(nome ?? '')
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, ' ');
+  return limparSaldoVazado(
+    String(nome ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, ' '),
+  );
 }
 
 /**

@@ -2,30 +2,36 @@ import { writePersistedLocalStorageJson } from '../../lib/persistentLocalStorage
 import { generateUUID } from '../../lib/uuid';
 import { companyStorageSlug } from './companyWorkspace';
 import { sanitizeCodigoReduzido } from './planoContasMapper';
-import { safeLocalStorageGetItem } from '../../lib/safeLocalStorage';
+import { safeLocalStorageGetItem, safeLocalStorageSetItem } from '../../lib/safeLocalStorage';
 
 /**
- * Regras de conciliação para extratos de Aplicação Financeira.
+ * Regras de conciliação de extratos de Aplicação Financeira.
  *
- * Diferença em relação às regras de extrato bancário (extratoRegrasContasStorage.ts):
- * uma aplicação sempre movimenta DOIS lados (débito e crédito) para cada tipo de
- * lançamento — ex.: "APLICAÇÃO" (entrada no extrato de aplicação) debita a conta de
- * Aplicação Financeira e credita Banco Conta Movimento; "RESGATE" faz o inverso;
- * "IOF"/"IRRF" debita a despesa correspondente e credita a Aplicação. Por isso a
- * regra aqui guarda contaDebito + contaCredito em vez de uma única contrapartida.
+ * MESMO modelo das regras de extrato bancário (extratoRegrasContasStorage.ts):
+ * histórico + natureza (D/C) + UMA contrapartida em código reduzido. O outro lado
+ * do lançamento é sempre a própria conta de aplicação — exatamente como, no extrato
+ * bancário, o outro lado é sempre a conta banco. `contaAplicacao` é o análogo de
+ * `contaBanco`: agrupa as regras por produto/conta de aplicação.
  */
+
+export type AplicacaoRegraContaNature = 'D' | 'C';
 
 export type AplicacaoRegraConta = {
   id: string;
   nome: string;
   /** Padrão de histórico/descrição do extrato de aplicação a ser casado. */
   descricao: string;
-  /** Conta de aplicação (produto) a que a regra pertence — nome/identificador livre. */
+  nature: AplicacaoRegraContaNature;
+  /** Conta de aplicação (produto) a que a regra pertence — análogo da conta banco. */
   contaAplicacao: string;
-  /** Código reduzido do plano de contas a debitar quando a regra casar. */
-  contaDebito: string;
-  /** Código reduzido do plano de contas a creditar quando a regra casar. */
-  contaCredito: string;
+  /** Contrapartida — OBRIGATÓRIO código reduzido (nunca classificação 1.1.10…). */
+  contaContrapartida: string;
+};
+
+/** Formato antigo (débito + crédito) — lido só para migração. */
+type AplicacaoRegraContaLegacy = AplicacaoRegraConta & {
+  contaDebito?: string;
+  contaCredito?: string;
 };
 
 const RE_RUIDO = /\b(saldo\s+do\s+dia|saldo\s+anterior|saldo\s+atual)\b/gi;
@@ -54,29 +60,31 @@ export function normAplicacaoContaCode(code: string): string {
 }
 
 function sanitizeRegra(
-  raw: Partial<AplicacaoRegraConta>,
+  raw: Partial<AplicacaoRegraContaLegacy>,
   defaultConta = '',
 ): AplicacaoRegraConta | null {
   const descricao = String(raw.descricao ?? '').trim();
   const descricaoNorm = normalizeAplicacaoRegraTexto(descricao);
   const contaAplicacao = String(raw.contaAplicacao ?? defaultConta).trim();
-  let contaDebito = String(raw.contaDebito ?? '').trim();
-  let contaCredito = String(raw.contaCredito ?? '').trim();
-  if (!descricaoNorm || !contaAplicacao || !contaDebito || !contaCredito) return null;
+  // Migração do formato antigo (contaDebito/contaCredito): a contrapartida é o lado
+  // informado; a natureza fica 'D' por padrão e pode ser corrigida na tela.
+  let contaContrapartida = String(
+    raw.contaContrapartida ?? raw.contaDebito ?? raw.contaCredito ?? '',
+  ).trim();
+  if (!descricaoNorm || !contaAplicacao || !contaContrapartida) return null;
 
-  const redDeb = sanitizeCodigoReduzido(contaDebito);
-  if (redDeb) contaDebito = redDeb;
-  const redCred = sanitizeCodigoReduzido(contaCredito);
-  if (redCred) contaCredito = redCred;
+  const red = sanitizeCodigoReduzido(contaContrapartida);
+  if (red) contaContrapartida = red;
 
   const nome = String(raw.nome ?? '').trim() || descricao.slice(0, 40);
+  const nature: AplicacaoRegraContaNature = raw.nature === 'C' ? 'C' : 'D';
   return {
     id: raw.id?.trim() || generateUUID(),
     nome,
     descricao,
+    nature,
     contaAplicacao,
-    contaDebito,
-    contaCredito,
+    contaContrapartida,
   };
 }
 
@@ -88,7 +96,7 @@ export function loadAplicacaoRegrasContas(company: string, defaultConta = ''): A
     if (!Array.isArray(parsed)) return [];
     const out: AplicacaoRegraConta[] = [];
     for (const item of parsed) {
-      const r = sanitizeRegra(item as Partial<AplicacaoRegraConta>, defaultConta);
+      const r = sanitizeRegra(item as Partial<AplicacaoRegraContaLegacy>, defaultConta);
       if (r) out.push(r);
     }
     return out;
@@ -127,6 +135,7 @@ export function addAplicacaoRegraConta(
   const current = loadAplicacaoRegrasContas(company);
   const duplicate = current.some(
     (item) =>
+      item.nature === regra.nature &&
       normalizeAplicacaoRegraTexto(item.descricao) === normalizeAplicacaoRegraTexto(regra.descricao) &&
       normAplicacaoContaCode(item.contaAplicacao) === normAplicacaoContaCode(regra.contaAplicacao),
   );
@@ -153,10 +162,83 @@ export function removeAplicacaoRegraConta(company: string, id: string): Aplicaca
   );
 }
 
+export function removeAplicacaoRegrasPorConta(
+  company: string,
+  contaAplicacao: string,
+): AplicacaoRegraConta[] {
+  const norm = normAplicacaoContaCode(contaAplicacao);
+  if (!norm) return loadAplicacaoRegrasContas(company);
+  return saveAplicacaoRegrasContas(
+    company,
+    loadAplicacaoRegrasContas(company).filter(
+      (r) => normAplicacaoContaCode(r.contaAplicacao) !== norm,
+    ),
+  );
+}
+
+function regraDedupKey(r: AplicacaoRegraConta): string {
+  const desc = normalizeAplicacaoRegraTexto(r.descricao);
+  const contra = sanitizeCodigoReduzido(r.contaContrapartida) || r.contaContrapartida.trim();
+  return `${r.nature}|${desc}|${contra}`;
+}
+
+/**
+ * Copia as regras de uma conta de aplicação para outra (mesma mecânica de
+ * "replicar regras para outro banco" na conciliação bancária).
+ */
+export function replicateAplicacaoRegrasParaConta(
+  company: string,
+  fromConta: string,
+  toConta: string,
+  sourceOverride?: AplicacaoRegraConta[],
+): { regras: AplicacaoRegraConta[]; added: number; skipped: number } {
+  const from = fromConta.trim();
+  const to = toConta.trim();
+  const all = loadAplicacaoRegrasContas(company);
+  if (!from || !to || normAplicacaoContaCode(from) === normAplicacaoContaCode(to)) {
+    return { regras: all, added: 0, skipped: 0 };
+  }
+
+  const source =
+    sourceOverride && sourceOverride.length > 0
+      ? sourceOverride
+      : filterAplicacaoRegrasPorConta(all, from);
+  if (source.length === 0) return { regras: all, added: 0, skipped: 0 };
+
+  const existingKeys = new Set(filterAplicacaoRegrasPorConta(all, to).map(regraDedupKey));
+  const copies: AplicacaoRegraConta[] = [];
+  let skipped = 0;
+  for (const r of source) {
+    const copy = sanitizeRegra({ ...r, id: generateUUID(), contaAplicacao: to }, to);
+    if (!copy) continue;
+    const key = regraDedupKey(copy);
+    if (existingKeys.has(key)) {
+      skipped += 1;
+      continue;
+    }
+    existingKeys.add(key);
+    copies.push(copy);
+  }
+  if (copies.length === 0) return { regras: all, added: 0, skipped };
+
+  return {
+    regras: saveAplicacaoRegrasContas(company, [...all, ...copies]),
+    added: copies.length,
+    skipped,
+  };
+}
+
 export function loadAplicacaoRegrasContaSelecionada(company: string, fallback = ''): string {
   try {
     const raw = safeLocalStorageGetItem(selectedContaKey(company));
-    return raw?.trim() || fallback;
+    if (!raw?.trim()) return fallback;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (typeof parsed === 'string' && parsed.trim()) return parsed.trim();
+    } catch {
+      /* valor legado sem JSON */
+    }
+    return raw.replace(/^"|"$/g, '').trim() || fallback;
   } catch {
     return fallback;
   }
@@ -164,22 +246,49 @@ export function loadAplicacaoRegrasContaSelecionada(company: string, fallback = 
 
 export function saveAplicacaoRegrasContaSelecionada(company: string, contaAplicacao: string): void {
   try {
-    writePersistedLocalStorageJson(selectedContaKey(company), contaAplicacao.trim());
+    safeLocalStorageSetItem(selectedContaKey(company), contaAplicacao.trim());
   } catch (e) {
     console.warn('[aplicacao-regras] não foi possível gravar conta selecionada:', e);
   }
 }
 
-/** Aplica as regras cadastradas a uma linha de histórico, retornando débito/crédito se casar. */
+/**
+ * Casa um lançamento do extrato de aplicação com as regras cadastradas.
+ * Mesma semântica do extrato bancário: natureza precisa bater e o padrão da
+ * regra precisa estar contido no histórico normalizado.
+ */
 export function matchAplicacaoRegra(
   regras: AplicacaoRegraConta[],
   historico: string,
+  nature?: AplicacaoRegraContaNature,
 ): AplicacaoRegraConta | null {
   const alvo = normalizeAplicacaoRegraTexto(historico);
   if (!alvo) return null;
+  let melhor: AplicacaoRegraConta | null = null;
+  let melhorTam = 0;
   for (const r of regras) {
+    if (nature && r.nature !== nature) continue;
     const padrao = normalizeAplicacaoRegraTexto(r.descricao);
-    if (padrao && alvo.includes(padrao)) return r;
+    if (!padrao || !alvo.includes(padrao)) continue;
+    // Padrão mais longo = mais específico, igual à conciliação bancária.
+    if (padrao.length > melhorTam) {
+      melhorTam = padrao.length;
+      melhor = r;
+    }
   }
-  return null;
+  return melhor;
+}
+
+/** Lançamentos do extrato de aplicação ainda sem regra (para "puxar histórico"). */
+export function findAplicacaoLinhasSemRegra(
+  linhas: Array<{ description: string; nature: AplicacaoRegraContaNature; value: number }>,
+  regrasDaConta: AplicacaoRegraConta[],
+): Array<{ description: string; nature: AplicacaoRegraContaNature; value: number }> {
+  const out: typeof linhas = [];
+  for (const row of linhas) {
+    if (!normalizeAplicacaoRegraTexto(row.description)) continue;
+    if (matchAplicacaoRegra(regrasDaConta, row.description, row.nature)) continue;
+    out.push({ ...row, description: String(row.description ?? '').replace(/\s+/g, ' ').trim() });
+  }
+  return out;
 }

@@ -40,6 +40,19 @@ export function applyPlanoTipoInferenceToRows(rows: GenericExtractedRow[]): Gene
   });
 }
 
+/**
+ * Campos que NÃO são coluna do PDF, mas que o parser de linha enxerta na linha
+ * a partir do cabeçalho do bloco ("Conta: 1065 - 1.1.1.02.00003 BANCO SICREDI").
+ *
+ * `columnIds` só lista as colunas visuais recortadas do documento, então esses
+ * campos derivados eram descartados aqui. No razão do Domínio isso significava
+ * perder o código REDUZIDO da conta do lançamento: a linha chegava no razão só
+ * com a contrapartida (`contaContrapartida`) e sem o próprio lado, e o export
+ * TXT+ Domínio — que exige conta de débito E de crédito — não achava nenhuma
+ * partida dobrada válida ("Nenhuma partida dobrada válida entre X e Y").
+ */
+const CAMPOS_DERIVADOS_DA_LINHA = ['codigo', 'classificacao'] as const;
+
 export function mapGenericRowsToOcrRows(
   rows: GenericExtractedRow[],
   columnIds: string[],
@@ -54,6 +67,13 @@ export function mapGenericRowsToOcrRows(
     };
     for (const id of columnIds) {
       out[id] = row.fields[id] || '';
+    }
+    // Só preenche o que a coluna mapeada não trouxe — a coluna do documento,
+    // quando existe, continua mandando.
+    for (const id of CAMPOS_DERIVADOS_DA_LINHA) {
+      if (out[id]?.trim()) continue;
+      const derivado = row.fields[id]?.trim();
+      if (derivado) out[id] = derivado;
     }
     return out;
   });
