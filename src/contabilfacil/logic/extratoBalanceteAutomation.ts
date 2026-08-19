@@ -4,6 +4,7 @@ import { normalizeRazaoImport } from './contabilPipeline';
 import { isExtratoLancamentoConciliado, type ExtratoBankRow } from './extratoConciliacaoBank';
 import {
   buildRazaoFromExtratoLancamentos,
+  contarEquivalentesDeOutrasOrigensDoUltimoMerge,
   mergeExtratoRazaoComExistente,
   type ConflitoDadoBalancete,
 } from './extratoToRazao';
@@ -18,10 +19,22 @@ export function postExtratoConciliadosNoRazao(
   companyName: string,
   extratoRows?: ExtratoBankRow[],
   forceOverwrite = false,
-): { gerados: number; conflitos?: ConflitoDadoBalancete[]; contasAfetadas?: string[] } {
+  /** Ver `removerEquivalentesDeOutrasOrigens` no merge — vem de confirmacao do usuario. */
+  removerEquivalentesDeOutrasOrigens = false,
+): {
+  gerados: number;
+  conflitos?: ConflitoDadoBalancete[];
+  contasAfetadas?: string[];
+  /** Conciliados recebidos nesta chamada (base para conferir com a aba de conciliacao). */
+  conciliadosRecebidos: number;
+  /** Conciliados que nao viraram partida — devolvido para o usuario ver o porque. */
+  ignorados: { id: string; descricao: string; motivo: string }[];
+  /** Linhas de outra origem, com o mesmo conteudo, que ficariam em dobro no balancete. */
+  equivalentesDeOutrasOrigens: number;
+} {
   const rows = extratoRows ?? readManagerData<ExtratoBankRow>(companyName, 'extrato');
   const conciliados = rows.filter(isExtratoLancamentoConciliado);
-  const { rows: razaoRows, gerados } = buildRazaoFromExtratoLancamentos(conciliados);
+  const { rows: razaoRows, gerados, ignorados } = buildRazaoFromExtratoLancamentos(conciliados);
 
   const existente = readManagerData<VisionBalanceteRow>(companyName, 'razao');
   
@@ -33,13 +46,22 @@ export function postExtratoConciliadosNoRazao(
     }
   }
 
-  const merged = mergeExtratoRazaoComExistente(existente, razaoRows, forceOverwrite);
+  const merged = mergeExtratoRazaoComExistente(existente, razaoRows, forceOverwrite, {
+    removerEquivalentesDeOutrasOrigens,
+  });
+  const equivalentesDeOutrasOrigens = contarEquivalentesDeOutrasOrigensDoUltimoMerge();
   const normalized = normalizeRazaoImport(merged);
   writeManagerDataNow(companyName, 'razao', normalized);
   flushManagerDataWrites();
   dispatchRazaoUpdated(companyName);
 
-  return { gerados, contasAfetadas: Array.from(contasAfetadas) };
+  return {
+    gerados,
+    contasAfetadas: Array.from(contasAfetadas),
+    conciliadosRecebidos: conciliados.length,
+    ignorados,
+    equivalentesDeOutrasOrigens,
+  };
 }
 
 function dispatchRazaoUpdated(companyName: string): void {

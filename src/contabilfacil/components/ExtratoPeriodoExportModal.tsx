@@ -22,11 +22,13 @@ interface Props {
   onCancel: () => void;
   /** Quando definido, exibe um botão extra para exportar sem filtro de período. */
   onConfirmAll?: () => void;
+  /** Rotulo do botao sem filtro de periodo. Padrao: "EXPORTAR TUDO". */
+  confirmAllLabel?: string;
   title?: string;
   subtitle?: string;
 }
 
-export default function ExtratoPeriodoExportModal({ isOpen, onConfirm, onCancel, onConfirmAll, title, subtitle }: Props) {
+export default function ExtratoPeriodoExportModal({ isOpen, onConfirm, onCancel, onConfirmAll, confirmAllLabel, title, subtitle }: Props) {
   const today = new Date().toISOString().split('T')[0];
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
@@ -152,7 +154,7 @@ export default function ExtratoPeriodoExportModal({ isOpen, onConfirm, onCancel,
               }}
               className="technical-button-secondary text-[10px] py-1 px-3"
             >
-              EXPORTAR TUDO
+              {confirmAllLabel || 'EXPORTAR TUDO'}
             </button>
           )}
           <button

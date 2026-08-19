@@ -8,9 +8,21 @@ import {
 
 export const EXTRATO_RAZAO_MARCA = 'extrato-conc';
 
+/**
+ * Quantas linhas de OUTRA origem (TXT importado, lançamento manual) o último merge
+ * encontrou com o mesmo conteúdo contábil dos lançamentos que estavam entrando —
+ * ou seja, quantas viraram lançamento em dobro no balancete. Lido logo após o merge.
+ */
+let ultimaContagemEquivalentesDeOutrasOrigens = 0;
+export function contarEquivalentesDeOutrasOrigensDoUltimoMerge(): number {
+  return ultimaContagemEquivalentesDeOutrasOrigens;
+}
+
 export type BuildExtratoRazaoResult = {
   rows: VisionBalanceteRow[];
   gerados: number;
+  /** Linhas conciliadas que NAO viraram partida — antes sumiam sem aviso. */
+  ignorados: { id: string; descricao: string; motivo: 'valor-invalido' }[];
 };
 
 export type ConflitoDadoBalancete = {
@@ -58,21 +70,42 @@ export function buildRazaoFromExtratoLancamentos(
   ordemInicial = 1,
 ): BuildExtratoRazaoResult {
   const rows: VisionBalanceteRow[] = [];
+  const ignorados: BuildExtratoRazaoResult['ignorados'] = [];
   let ordem = ordemInicial;
   let gerados = 0;
+  /**
+   * O `id` do extrato vira `importId` e e a chave de substituicao no razao.
+   * Extratos reimportados (OFX/TXT) trazem ids repetidos: dois lancamentos
+   * diferentes com o mesmo `importId` viravam UM so na proxima importacao —
+   * lancamento sumindo do balancete sem aviso. Desambigua com sufixo.
+   */
+  const idsVistos = new Map<string, number>();
 
   for (const lan of lancamentos) {
     if (!isExtratoLancamentoConciliado(lan)) continue;
 
     const { accountDebit, accountCredit } = resolveExtratoRowContas(lan);
-    const valor = Math.abs(lan.value ?? 0);
-    if (valor <= 0) continue;
+    const bruto = lan.value ?? 0;
+    const valor = Number.isFinite(bruto) ? Math.abs(bruto) : NaN;
+    // Antes, `valor <= 0` descartava tambem os lancamentos de R$ 0,00, que a aba
+    // de conciliacao conta como conciliados — o balancete vinha com menos linhas
+    // que a conciliacao e ninguem era avisado. So valor invalido fica de fora.
+    if (!Number.isFinite(valor)) {
+      ignorados.push({
+        id: lan.id,
+        descricao: (lan.description || lan.operationName || '').trim(),
+        motivo: 'valor-invalido',
+      });
+      continue;
+    }
 
     // Usa o texto original do extrato (description) como histórico — nunca o operationName
     // que pode ser um complemento gerado pelo sistema. O histórico que vai para o balancete/razão
     // deve ser idêntico ao do extrato, sem nenhum marcador interno anexado.
     const nome = (lan.description || lan.operationName || 'LANCAMENTO').trim().toUpperCase();
-    const importId = extratoRazaoImportId(lan.id);
+    const repeticao = idsVistos.get(lan.id) ?? 0;
+    idsVistos.set(lan.id, repeticao + 1);
+    const importId = extratoRazaoImportId(repeticao === 0 ? lan.id : `${lan.id}#${repeticao}`);
     const deb = normalizeConta(accountDebit);
     const cred = normalizeConta(accountCredit);
     // Extrato costuma vir em ISO (2026-06-01); razão usa DD/MM/AAAA.
@@ -116,7 +149,7 @@ export function buildRazaoFromExtratoLancamentos(
     gerados += 1;
   }
 
-  return { rows, gerados };
+  return { rows, gerados, ignorados };
 }
 
 /**
@@ -236,6 +269,17 @@ export function mergeExtratoRazaoComExistente(
   existente: VisionBalanceteRow[],
   novos: VisionBalanceteRow[],
   _forceOverwrite = false,
+  opts?: {
+    /**
+     * Remove também linhas de OUTRA origem (TXT importado, lançamento manual) que
+     * tenham exatamente o mesmo conteúdo contábil dos novos. É o caso de quem
+     * exportou o TXT da conciliação e importou esse mesmo TXT no balancete: o
+     * lançamento passa a existir duas vezes, com origens diferentes, e o mês fica
+     * com o dobro (ou mais) de movimento. Fora do padrão porque apaga dado de
+     * outra origem — só com confirmação explícita do usuário.
+     */
+    removerEquivalentesDeOutrasOrigens?: boolean;
+  },
 ): VisionBalanceteRow[] {
   // Extrai IDs dos novos lançamentos do extrato
   const novosIds = new Set<string>();
@@ -251,6 +295,34 @@ export function mergeExtratoRazaoComExistente(
     if (r.codigo) contasAfetadas.add(r.codigo);
   }
 
+  /**
+   * RAIZ DA DUPLICAÇÃO NO BALANCETE.
+   *
+   * A substituição acontecia SÓ pelo `id` da linha do extrato. Mas esse id é
+   * gerado na leitura do arquivo: reimportar o mesmo extrato (XLSX/OFX/TXT), ou
+   * trocar de pasta e voltar, produz ids NOVOS para os MESMOS lançamentos. Como
+   * nenhum id antigo batia, nada era substituído e a importação virava soma:
+   * o mês recebia o movimento de novo a cada importação (D e C inflados no
+   * balancete, saldo anterior correto — porque o mês anterior já estava fechado).
+   *
+   * Identifica também pelo CONTEÚDO contábil (data + contas + valor + histórico).
+   * Dois lançamentos idênticos de verdade no mesmo dia continuam valendo dois:
+   * as duas linhas novas entram, e o que é apagado são as cópias antigas.
+   */
+  const chaveConteudo = (r: VisionBalanceteRow) =>
+    [
+      (r.data ?? '').trim(),
+      (r.contaDeb ?? '').trim(),
+      (r.contaCred ?? '').trim(),
+      (r.debito ?? 0).toFixed(2),
+      (r.credito ?? 0).toFixed(2),
+      (r.nome ?? '').trim().toUpperCase(),
+    ].join('|');
+  const conteudosNovos = new Set(novos.map(chaveConteudo));
+  ultimaContagemEquivalentesDeOutrasOrigens = existente.filter(
+    (r) => !extractExtratoRazaoId(r) && conteudosNovos.has(chaveConteudo(r)),
+  ).length;
+
   // Remove:
   // 1. Lançamentos do extrato com mesmo ID (serão substituídos pelos novos)
   // 2. Lançamentos manuais (sem importId) das contas afetadas
@@ -261,8 +333,23 @@ export function mergeExtratoRazaoComExistente(
     // Lançamento do extrato com mesmo ID → remove
     if (idAntigo && novosIds.has(idAntigo)) return false;
 
-    // Lançamento manual (sem importId) de conta afetada → remove
-    if (!idAntigo && r.codigo && contasAfetadas.has(r.codigo)) return false;
+    // Lançamento do extrato com o MESMO conteúdo contábil, ainda que o id do
+    // extrato tenha mudado numa releitura do arquivo → remove (é a mesma linha).
+    if (idAntigo && conteudosNovos.has(chaveConteudo(r))) return false;
+
+    // Mesmo conteúdo, mas veio de outra origem (TXT importado no balancete etc.).
+    // Só sai quando o usuário confirma — senão o mês soma o mesmo lançamento duas vezes.
+    if (opts?.removerEquivalentesDeOutrasOrigens && conteudosNovos.has(chaveConteudo(r))) {
+      return false;
+    }
+
+    // Lançamento manual (SEM importId nenhum) de conta afetada → remove.
+    // `idAntigo` e null tanto para linha manual quanto para linha de OUTRA
+    // origem (folha, importacao de lancamentos). Testar so `idAntigo` apagava
+    // essas outras origens junto — o comentario acima ja dizia que elas deviam
+    // ser mantidas. Checa o importId cru.
+    const semOrigem = !(r.importId ?? '').trim();
+    if (semOrigem && r.codigo && contasAfetadas.has(r.codigo)) return false;
 
     return true;
   });

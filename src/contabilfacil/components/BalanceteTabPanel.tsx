@@ -254,13 +254,21 @@ export default function BalanceteTabPanel({
     salvarPeriodo(selectedCompany, { de, ate });
   }, [periodoDe, periodoAte, selectedCompany]);
 
+  /**
+   * "Limpar" esvazia só os campos De/Até.
+   *
+   * Antes ele também zerava `periodoConfirmado`, e como TODO o resto da aba
+   * (balancete, Configuração, Exportar PDF, PDF Invertidas, Aplicar Automações)
+   * só é montado quando existe período confirmado, a tela inteira sumia: sobrava
+   * a barra de datas e nada mais. Limpar os campos para digitar outro período não
+   * é motivo para desmontar a aba — o balancete segue no período atual até o
+   * usuário informar um novo e clicar em OK.
+   */
   const limparPeriodo = useCallback(() => {
     periodoManualRef.current = false;
     setPeriodoDe('');
     setPeriodoAte('');
-    setPeriodoConfirmado(null);
-    salvarPeriodo(selectedCompany, null);
-  }, [selectedCompany]);
+  }, []);
 
   const temRazao = razaoRows.length > 0;
   const temPlano = planoContas.length > 0;

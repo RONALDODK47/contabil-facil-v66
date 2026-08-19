@@ -179,6 +179,7 @@ import {
 } from '../logic/extratoConciliacaoExport';
 import {
   filterExtratoByConciliacaoFiltro,
+  isExtratoLancamentoConciliado,
   summarizeExtratoConciliacao,
   syncExtratoConciliacaoStatus,
   type ExtratoConciliacaoFiltro,
@@ -484,7 +485,10 @@ export default function ManagerModule({
   const [periodoModalConciliacaoOpen, setPeriodoModalConciliacaoOpen] = useState(false);
   const [periodoModalFolhaOpen, setPeriodoModalFolhaOpen] = useState(false);
   const [periodoModalExportExtratoOpen, setPeriodoModalExportExtratoOpen] = useState(false);
+  const [periodoModalImportBalanceteOpen, setPeriodoModalImportBalanceteOpen] = useState(false);
   const lastPeriodoConciliacaoRef = React.useRef<BalancetePeriodo | null>(null);
+  /** Marca que o envio ao balancete em curso e "importar tudo" (sem filtro de periodo). */
+  const lastConciliacaoTodosRef = React.useRef(false);
   /** Período De/Até confirmado na aba Balancete — filtra a exportação TXT. */
   const [balancetePeriodoConfirmado, setBalancetePeriodoConfirmado] = useState<{
     de: string;
@@ -1478,7 +1482,14 @@ export default function ManagerModule({
     // Reimportar o MESMO arquivo (mesmo nome) tem que atualizar a entrada existente em
     // "Docs. Importados", não criar uma nova — senão a lista acumula várias entradas do
     // mesmo TXT a cada reimportação.
-    const importAntigo = filename ? importedTxts.find((t) => t.filename === filename) : undefined;
+    // Lê a lista PERSISTIDA, não o state de React: `importedTxts` fica velho entre
+    // duas importações seguidas (setState é assíncrono) e, sem achar a entrada que
+    // acabou de ser criada, o mesmo arquivo ganhava um importId novo e uma segunda
+    // linha em "Docs. Importados". Excluir uma delas depois deixava os lançamentos
+    // da outra no balancete — o arquivo saía da lista e o balancete não mudava.
+    const keyTxtsAtual = `contabilfacil_${companyStorageSlug(selectedCompany)}_imported_txts`;
+    const txtsPersistidos = readPersistedLocalStorageJson<typeof importedTxts>(keyTxtsAtual, importedTxts);
+    const importAntigo = filename ? txtsPersistidos.find((t) => t.filename === filename) : undefined;
     if (filename) {
       importId = importAntigo?.id ?? 'import-' + Date.now();
       const monthsSet = new Set<string>();
@@ -1497,10 +1508,10 @@ export default function ManagerModule({
         months,
         importedAt: new Date().toLocaleString('pt-BR'),
       };
-      const key = `contabilfacil_${companyStorageSlug(selectedCompany)}_imported_txts`;
+      const key = keyTxtsAtual;
       const updatedMetaList = importAntigo
-        ? importedTxts.map((t) => (t.id === importId ? newMeta : t))
-        : [...importedTxts, newMeta];
+        ? txtsPersistidos.map((t) => (t.id === importId ? newMeta : t))
+        : [...txtsPersistidos, newMeta];
       setImportedTxts(updatedMetaList);
       writePersistedLocalStorageJson(key, updatedMetaList);
     }
@@ -1595,10 +1606,23 @@ export default function ManagerModule({
   };
 
   const deleteImportedTxt = async (id: string) => {
-    const removidos = razaoRows.filter((r) => r.importId === id).length;
     const filename = importedTxts.find((t) => t.id === id)?.filename ?? id;
-    const semImportId = razaoRows.filter((r) => r.importId !== id);
-    const remainingTxts = importedTxts.filter((t) => t.id !== id);
+    /**
+     * Excluir em "Docs. Importados" TEM que tirar os lançamentos do balancete.
+     * Só o `id` do card não bastava: reimportações antigas do MESMO arquivo criavam
+     * entradas com ids diferentes, e sobrava lançamento no balancete depois de
+     * apagar o card. Junta todos os ids registrados com o mesmo nome de arquivo.
+     */
+    const idsDoArquivo = new Set<string>([
+      id,
+      ...importedTxts.filter((t) => t.filename === filename).map((t) => t.id),
+    ]);
+    const pertenceAoArquivo = (r: VisionBalanceteRow) =>
+      Boolean(r.importId && idsDoArquivo.has(r.importId));
+
+    const removidos = razaoRows.filter(pertenceAoArquivo).length;
+    const semImportId = razaoRows.filter((r) => !pertenceAoArquivo(r));
+    const remainingTxts = importedTxts.filter((t) => !idsDoArquivo.has(t.id));
 
     // Reimportações do MESMO arquivo feitas antes desta correção geravam um importId
     // novo a cada vez, então o razão pode ter lançamentos "órfãos" de imports antigas
@@ -1608,9 +1632,7 @@ export default function ManagerModule({
     // excluída — mesma chave já usada para detectar duplicidade ao importar.
     const chaveLancamento = (r: VisionBalanceteRow) =>
       `${r.data || ''}|${r.codigo || ''}|${r.classificacao || ''}|${r.debito || 0}|${r.credito || 0}|${(r.nome || '').trim().toUpperCase()}`;
-    const chavesExcluidas = new Set(
-      razaoRows.filter((r) => r.importId === id).map(chaveLancamento),
-    );
+    const chavesExcluidas = new Set(razaoRows.filter(pertenceAoArquivo).map(chaveLancamento));
     const remainingRows = chavesExcluidas.size
       ? semImportId.filter((r) => !chavesExcluidas.has(chaveLancamento(r)))
       : semImportId;
@@ -1628,7 +1650,14 @@ export default function ManagerModule({
     // parecendo que a exclusão nunca tinha acontecido.
     try {
       await flushPersistenceAfterCriticalWrite();
-      if (orfaosRemovidos > 0) {
+      // Antes, quando nada casava, o card sumia da lista e o balancete ficava
+      // exatamente igual — sem uma palavra. Avisa em vez de fingir que excluiu.
+      if (removidos === 0 && orfaosRemovidos === 0) {
+        window.alert(
+          `"${filename}" foi removido da lista, mas NENHUM lançamento do balancete estava marcado como vindo desse arquivo — ` +
+            `nada foi excluído do razão.\n\nUse Configuração › Excluir período / contas para tirar esses lançamentos do balancete.`,
+        );
+      } else if (orfaosRemovidos > 0) {
         window.alert(
           `"${filename}" excluído: ${removidos} lançamento(s) removidos, + ${orfaosRemovidos} lançamento(s) órfão(s) de reimportações antigas do mesmo arquivo (mesma data/conta/valor/histórico) também removidos.`,
         );
@@ -2057,7 +2086,10 @@ export default function ManagerModule({
     selectedCompany,
   ]);
 
-  const handleMandarConciliacaoParaBalancete = useCallback(async (periodo?: BalancetePeriodo) => {
+  const handleMandarConciliacaoParaBalancete = useCallback(async (
+    periodo?: BalancetePeriodo,
+    opts?: { todos?: boolean },
+  ) => {
     const conciliadas = extratoConciliacaoStats.conciliadas;
     if (conciliadas === 0) {
       alert(
@@ -2066,8 +2098,14 @@ export default function ManagerModule({
       return;
     }
     // Se ainda não temos o período (e não estamos no reenvio forçado), abre o modal para capturá-lo
-    const periodoEfetivo = periodo ?? lastPeriodoConciliacaoRef.current;
-    if (!periodoEfetivo) {
+    // "Importar tudo" (mesma opcao do EXPORTAR TXT+): manda todos os conciliados,
+    // de qualquer data, sem pedir periodo. O ref mantem a escolha viva para o
+    // reenvio forcado (SOBRESCREVER), que rechama este handler sem argumentos.
+    const todos = opts?.todos ?? lastConciliacaoTodosRef.current;
+    if (todos) lastConciliacaoTodosRef.current = true;
+
+    const periodoEfetivo = todos ? null : (periodo ?? lastPeriodoConciliacaoRef.current);
+    if (!todos && !periodoEfetivo) {
       setPeriodoModalConciliacaoOpen(true);
       return;
     }
@@ -2079,14 +2117,28 @@ export default function ManagerModule({
     // e a data só entrava na mensagem final. Filtra aqui pelo intervalo (inclusive
     // dos dois lados) para que "mandar para o balancete" realmente escope pelas
     // datas informadas — e nada fora do período seja arrastado junto.
-    const lancamentosNoPeriodo = extratoLancamentos.filter((lan) => {
-      const br = parseDataRazao(lan.date); // "DD/MM/AAAA" (ou "" se não reconhecer)
-      const m = br.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-      if (!m) return false;
-      const iso = `${m[3]}-${m[2]}-${m[1]}`;
-      return iso >= periodoEfetivo.dataInicio && iso <= periodoEfetivo.dataFim;
-    });
+    // Datas que o parser nao reconhece ("2026/06/15", "JUN/26", vazia) nao caem em
+    // periodo NENHUM: quem importava mes a mes nunca via essas linhas chegarem ao
+    // balancete e nao recebia aviso. Separa e informa no fim.
+    const semDataReconhecida: typeof extratoLancamentos = [];
+    const lancamentosNoPeriodo = !periodoEfetivo
+      ? extratoLancamentos
+      : extratoLancamentos.filter((lan) => {
+          const br = parseDataRazao(lan.date); // "DD/MM/AAAA" (ou "" se não reconhecer)
+          const m = br.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+          if (!m) {
+            if (isExtratoLancamentoConciliado(lan)) semDataReconhecida.push(lan);
+            return false;
+          }
+          const iso = `${m[3]}-${m[2]}-${m[1]}`;
+          return iso >= periodoEfetivo.dataInicio && iso <= periodoEfetivo.dataFim;
+        });
     if (lancamentosNoPeriodo.length === 0) {
+      if (!periodoEfetivo) {
+        alert('Nenhum lancamento do extrato para importar.');
+        lastConciliacaoTodosRef.current = false;
+        return;
+      }
       const periodoStr = `${periodoEfetivo.dataInicio.split('-').reverse().join('/')} até ${periodoEfetivo.dataFim.split('-').reverse().join('/')}`;
       alert(`Nenhum lançamento do extrato cai no período ${periodoStr}.`);
       lastPeriodoConciliacaoRef.current = null;
@@ -2094,7 +2146,38 @@ export default function ManagerModule({
     }
 
     try {
-      const { gerados, conflitos, contasAfetadas } = postExtratoConciliadosNoRazao(selectedCompany, lancamentosNoPeriodo, forceOverwriteBalancete);
+      /**
+       * Antes de gravar, mede quantas linhas JÁ existentes no razão têm exatamente o
+       * mesmo conteúdo contábil dos que estão entrando, mas vieram de outra origem —
+       * caso clássico: exportou o TXT+ da conciliação e importou esse mesmo TXT no
+       * balancete. Sem isso o mês somava o mesmo lançamento duas vezes (D e C do mês
+       * inflados, saldo anterior correto). Pergunta em vez de decidir sozinho: apagar
+       * lançamento de outra origem não é reversível.
+       */
+      const previa = postExtratoConciliadosNoRazao(
+        selectedCompany,
+        lancamentosNoPeriodo,
+        forceOverwriteBalancete,
+      );
+      let resultado = previa;
+      if (previa.equivalentesDeOutrasOrigens > 0) {
+        const substituir = window.confirm(
+          `${previa.equivalentesDeOutrasOrigens} lançamento(s) já estavam no balancete com a MESMA data, conta, valor e histórico, ` +
+            `mas vindos de outra origem (ex.: o TXT+ exportado da conciliação e importado aqui).\n\n` +
+            `Se ficarem os dois, o mês soma o mesmo lançamento duas vezes.\n\n` +
+            `OK = manter só os da conciliação (remove as cópias da outra origem)\n` +
+            `Cancelar = deixar como está`,
+        );
+        if (substituir) {
+          resultado = postExtratoConciliadosNoRazao(
+            selectedCompany,
+            lancamentosNoPeriodo,
+            forceOverwriteBalancete,
+            true,
+          );
+        }
+      }
+      const { gerados, conflitos, conciliadosRecebidos, ignorados } = resultado;
 
       // Se há conflitos detectados, mostra modal
       if (conflitos && conflitos.length > 0 && !forceOverwriteBalancete) {
@@ -2110,17 +2193,44 @@ export default function ManagerModule({
       setForceOverwriteBalancete(false);
       setShowBalanceteConflictModal(false);
       lastPeriodoConciliacaoRef.current = null;
-      
+      lastConciliacaoTodosRef.current = false;
+
       // Monta mensagem simplificada
-      const periodoStr = `${periodoEfetivo.dataInicio.split('-').reverse().join('/')} até ${periodoEfetivo.dataFim.split('-').reverse().join('/')}`;
+      const periodoStr = !periodoEfetivo
+        ? 'todos os lancamentos (sem filtro de data)'
+        : `${periodoEfetivo.dataInicio.split('-').reverse().join('/')} até ${periodoEfetivo.dataFim.split('-').reverse().join('/')}`;
+      // Conferencia explicita: o que a aba de conciliacao mostra x o que entrou.
+      const linhasConferencia: string[] = [];
+      if (ignorados.length > 0) {
+        linhasConferencia.push(
+          `${ignorados.length} lançamento(s) ignorado(s) por valor inválido: ` +
+            ignorados.slice(0, 5).map((i) => i.descricao || i.id).join(', ') +
+            (ignorados.length > 5 ? '…' : ''),
+        );
+      }
+      if (semDataReconhecida.length > 0) {
+        linhasConferencia.push(
+          `${semDataReconhecida.length} lançamento(s) conciliado(s) ficaram de fora porque a data não é reconhecida ` +
+            `(ex.: "${semDataReconhecida[0]?.date ?? ''}"). Corrija a data ou use IMPORTAR TUDO.`,
+        );
+      }
+      if (gerados !== conciliadosRecebidos) {
+        linhasConferencia.push(`Conciliados no filtro: ${conciliadosRecebidos} · importados: ${gerados}.`);
+      }
+      const NL = String.fromCharCode(10);
+      const rodape =
+        linhasConferencia.length > 0
+          ? `${NL}${NL}ATENÇÃO:${NL}- ${linhasConferencia.join(`${NL}- `)}`
+          : '';
+
       let mensagem = '';
       if (gerados > 0) {
         mensagem = `${gerados} lançamento(s) conciliado(s) enviados ao balancete.\nPeríodo: ${periodoStr}\n\nAbra a aba Balancete para conferir.`;
       } else {
         mensagem = 'Nada novo para enviar — os conciliados já estavam no balancete (ou não geraram partidas).';
       }
-      
-      alert(mensagem);
+
+      alert(mensagem + rodape);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Falha ao enviar para o balancete.';
       alert(msg);
@@ -3102,6 +3212,15 @@ export default function ManagerModule({
                               >
                                 <Save size={11} aria-hidden="true" />
                                 SALVAR EXTRATO (autosave)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPeriodoModalImportBalanceteOpen(true)}
+                                className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
+                                title="Importa os lancamentos conciliados para o balancete - por periodo ou tudo"
+                              >
+                                <Upload size={11} aria-hidden="true" />
+                                IMPORTAR PARA O BALANCETE
                               </button>
                               <button
                                 type="button"
@@ -4257,6 +4376,21 @@ export default function ManagerModule({
         isOpen={periodoModalFolhaOpen}
         onConfirm={handlePeriodoFolhaConfirmado}
         onCancel={() => setPeriodoModalFolhaOpen(false)}
+      />
+      <ExtratoPeriodoExportModal
+        isOpen={periodoModalImportBalanceteOpen}
+        title="Importar Conciliacao para o Balancete"
+        subtitle="Escolha o periodo (ex.: um mes) ou importe tudo de uma vez"
+        confirmAllLabel="IMPORTAR TUDO"
+        onConfirm={(periodo) => {
+          setPeriodoModalImportBalanceteOpen(false);
+          void handleMandarConciliacaoParaBalancete(periodo);
+        }}
+        onConfirmAll={() => {
+          setPeriodoModalImportBalanceteOpen(false);
+          void handleMandarConciliacaoParaBalancete(undefined, { todos: true });
+        }}
+        onCancel={() => setPeriodoModalImportBalanceteOpen(false)}
       />
       <ExtratoPeriodoExportModal
         isOpen={periodoModalExportExtratoOpen}

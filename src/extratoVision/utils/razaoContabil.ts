@@ -885,8 +885,11 @@ export function parseDataRazao(val: unknown): string {
   const s = String(val).trim();
   if (!s || s === '—') return s;
 
-  // ISO YYYY-MM-DD (ou YYYY-MM-DDTHH:mm…)
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+  // ISO YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD (ou com hora depois).
+  // Só o hífen era aceito; extratos que vinham com barra ("2026/06/15") saíam daqui
+  // inalterados e, sem o formato DD/MM/AAAA, ficavam fora de QUALQUER filtro de
+  // período — o lançamento simplesmente não chegava ao balancete, sem aviso.
+  const iso = s.match(/^(\d{4})[-/.](\d{2})[-/.](\d{2})(?:[T\s].*)?$/);
   if (iso) {
     const yyyy = iso[1];
     const mm = iso[2];

@@ -98,8 +98,10 @@ const MODOS: Array<{ id: ModoTransferencia; label: string; desc: string }> = [
   { id: 'todos', label: 'Todos', desc: 'Transfere os lançamentos da conta para a conta de destino — o sistema corta automaticamente o que inverteria o destino.' },
   { id: 'invertidos', label: 'Só invertidos', desc: 'Transfere apenas os lançamentos invertidos (em vermelho) — também respeitando o limite da conta de destino.' },
   { id: 'ratear', label: 'Ratear valor', desc: 'Distribui parte do saldo total para uma ou mais contas, sem desmembrar lançamentos — informe o valor de cada conta, respeitando o limite do saldo.' },
-  { id: 'zerar', label: 'Zerar conta', desc: 'Detecta o saldo que sobra no fim de cada mês (do lado invertido da conta) e gera automaticamente o rateio do valor necessário para a conta escolhida.' },
-  { id: 'compensacao', label: 'Compensação', desc: 'Para cada dia em que a conta fecha invertida, lança o valor exato do saldo do dia contra a conta escolhida (você decide se ela é debitada ou creditada) — e desfaz esse lançamento no dia seguinte. Repete dia a dia até a conta ficar com a natureza correta.' },
+  { id: 'zerar', label: 'Zerar saldo', desc: 'Leva o saldo atual INTEIRO da conta para a conta de destino, deixando a origem zerada — vale também quando a conta não tem lançamento no período e o saldo veio de períodos anteriores.' },
+  // Modo "Compensação" removido a pedido. O modo continua existindo no type e nos
+  // ramos abaixo só porque `zerar` divide o mesmo caminho — sem entrada aqui, o
+  // botão não aparece e `modo` nunca chega a 'compensacao' (o padrão é 'invertidos').
 ];
 
 export function RazaoContaRateioModal({
@@ -113,6 +115,8 @@ export function RazaoContaRateioModal({
 }: RazaoContaRateioModalProps) {
   const [modo, setModo] = useState<ModoTransferencia>('invertidos');
   const [contaDestino, setContaDestino] = useState<string>('');
+  /** Data escolhida para o lançamento de zeramento (ISO do input date). Vazio = automática. */
+  const [dataZeramentoIso, setDataZeramentoIso] = useState<string>('');
   const [rateios, setRateios] = useState<RateioRow[]>([novaRateioRow()]);
   /** Modo Compensação: o usuário escolhe se a conta selecionada (destino) é debitada ou creditada. */
   const [compensacaoSentidoEscolhido, setCompensacaoSentidoEscolhido] =
@@ -171,6 +175,16 @@ export function RazaoContaRateioModal({
     return s;
   }, [contaInvertida, lancamentos]);
   const saldoTotalAbs = Math.abs(saldoTotal);
+
+  /** Primeira `ordem` que ainda não existe no razão — base das partidas geradas aqui. */
+  const proximaOrdemLivre = useMemo(() => {
+    let max = 0;
+    for (const r of razaoCompleto) {
+      const o = r.ordem;
+      if (o != null && Number.isFinite(o) && o > max) max = o;
+    }
+    return max + 1;
+  }, [razaoCompleto]);
 
   const totalRateado = useMemo(
     () => rateios.reduce((acc, r) => acc + parseValorBr(r.valor), 0),
@@ -250,6 +264,41 @@ export function RazaoContaRateioModal({
     const datas = lancamentos.todos.map((r) => r.data).filter(Boolean) as string[];
     return datas.length ? datas[datas.length - 1] : '';
   }, [lancamentos.todos]);
+
+  /**
+   * Data do lançamento de zeramento.
+   *
+   * Preferência absoluta para a data que o usuário escolher: o mês do lançamento é
+   * o mês que zera no balancete, e a data automática podia cair num mês diferente
+   * do que está sendo olhado — a conta continuava aparecendo invertida, com D e C
+   * em "—", como se nada tivesse sido lançado.
+   *
+   * Sem escolha: a última data com movimento da própria conta; se ela não tem
+   * lançamento nenhum (só saldo de períodos anteriores), a última data do razão da
+   * empresa; e, em último caso, hoje.
+   */
+  const dataParaZeramento = useMemo(() => {
+    const escolhida = dataZeramentoIso.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(escolhida)) {
+      const [y, m, d] = escolhida.split('-');
+      return `${d}/${m}/${y}`;
+    }
+    if (ultimaData) return ultimaData;
+    let maisRecente = '';
+    let maiorTempo = -Infinity;
+    for (const r of razaoCompleto) {
+      const t = dataToTime(r.data);
+      if (Number.isFinite(t) && t > maiorTempo) {
+        maiorTempo = t;
+        maisRecente = r.data ?? '';
+      }
+    }
+    if (maisRecente) return maisRecente;
+    const hoje = new Date();
+    const dd = String(hoje.getDate()).padStart(2, '0');
+    const mm = String(hoje.getMonth() + 1).padStart(2, '0');
+    return `${dd}/${mm}/${hoje.getFullYear()}`;
+  }, [dataZeramentoIso, ultimaData, razaoCompleto]);
 
   const origemPlano = useMemo(() => {
     if (!contaInvertida) return undefined;
@@ -425,9 +474,25 @@ export function RazaoContaRateioModal({
       data: string,
       historico: string,
       origemCredita: boolean,
+      /** Deslocamento quando a mesma ação gera vários pares (rateio, compensação). */
+      indiceDoPar = 0,
     ): VisionBalanceteRow[] => {
       if (!contaInvertida) return [];
-      const origemCod = contaInvertida.codigo || contaInvertida.classificacao;
+      /**
+       * Código e classificação da ORIGEM resolvidos pelo PLANO, igual ao destino.
+       *
+       * A perna de destino sempre saía com `codigoReduzido`/`code` do plano, mas a
+       * de origem usava o que veio da linha clicada no balancete. Quando os dois
+       * não batiam — classificação vazia, ou código reduzido faltando —, a linha
+       * gerada tinha uma chave de conta diferente da linha real do balancete
+       * (que agrupa por classificação e, sem ela, por código). O lançamento era
+       * gravado e aparecia no editor com a conta certa, mas o débito NÃO entrava
+       * na conta de origem: ela seguia com o mesmo saldo invertido e "—" em D/C,
+       * levando a refazer o zeramento e duplicar o lançamento.
+       */
+      const origemCod =
+        origemPlano?.codigoReduzido || contaInvertida.codigo || contaInvertida.classificacao;
+      const origemCls = origemPlano?.code || contaInvertida.classificacao || '';
       const destinoCod = destino.codigoReduzido || destino.code;
       const devedor = origemCredita;
       const base = {
@@ -438,12 +503,25 @@ export function RazaoContaRateioModal({
         contaDeb: devedor ? destinoCod : origemCod,
         contaCred: devedor ? origemCod : destinoCod,
         isReconciliation: true,
+        /**
+         * As duas pernas TÊM que sair com a MESMA `ordem`, e uma ordem que ainda
+         * não exista no razão.
+         *
+         * Saíam sem `ordem` nenhuma: `normalizeRazaoImport` então numerava cada
+         * linha pela posição no array, dando ordens DIFERENTES para o débito e o
+         * crédito do mesmo lançamento — e ainda por cima repetindo ordens que já
+         * existiam em outras linhas da mesma data. Como o balancete casa as
+         * partidas por `data + ordem` (ver partidaUnificada), o par gerado era
+         * emparelhado com linhas alheias e o lançamento não aparecia: o preview
+         * mostrava o resultado certo e "na prática não fazia nada".
+         */
+        ordem: proximaOrdemLivre + indiceDoPar,
       };
       return [
         {
           ...base,
           codigo: origemCod,
-          classificacao: contaInvertida.classificacao,
+          classificacao: origemCls,
           debito: devedor ? 0 : valor,
           credito: devedor ? valor : 0,
         },
@@ -456,7 +534,7 @@ export function RazaoContaRateioModal({
         },
       ];
     },
-    [contaInvertida],
+    [contaInvertida, origemPlano, proximaOrdemLivre],
   );
 
   /**
@@ -467,46 +545,35 @@ export function RazaoContaRateioModal({
    * ao contrário e uma conta devedora invertida a crédito (o caso do banco) não
    * gerava nada — "nenhum mês fechou com saldo devedor".
    */
+  /**
+   * "Zerar saldo": leva o saldo ATUAL inteiro da conta para a conta de destino,
+   * deixando a origem em zero.
+   *
+   * Antes isso só olhava mês a mês os lançamentos DO PERÍODO e só agia quando o
+   * mês fechava com a natureza invertida. Conta sem lançamento no período, mas com
+   * saldo herdado de períodos anteriores (o caso de LUCRO DO EXERCÍCIO com R$
+   * 74.300,08 D e 0 lançamentos), caía no "nada a zerar" — sendo que era justamente
+   * o saldo que o usuário queria zerar. Agora usa `saldoTotal`, que já inclui o
+   * saldo anterior, e não exige que a conta esteja invertida.
+   */
   const gerarZerarMensal = useCallback(
     (destino: AccountPlan): VisionBalanceteRow[] => {
       if (!contaInvertida) return [];
-      const porMes = new Map<string, VisionBalanceteRow[]>();
-      for (const r of lancamentos.todos) {
-        const mes = mesDaData(r.data);
-        if (!mes) continue;
-        if (!porMes.has(mes)) porMes.set(mes, []);
-        porMes.get(mes)!.push(r);
-      }
-      const meses = [...porMes.keys()].sort((a, b) => {
-        const [ma, ya] = a.split('/').map(Number);
-        const [mb, yb] = b.split('/').map(Number);
-        return ya !== yb ? ya - yb : ma - mb;
-      });
-      const gerados: VisionBalanceteRow[] = [];
-      let acumulado = 0;
-      for (const mes of meses) {
-        const rows = [...porMes.get(mes)!].sort((a, b) => dataToTime(a.data) - dataToTime(b.data));
-        for (const r of rows) acumulado += (r.debito ?? 0) - (r.credito ?? 0);
-        const invertido = natOrigem === 'D' ? acumulado < -0.005 : acumulado > 0.005;
-        if (!invertido) continue;
-        const dataMes = rows[rows.length - 1].data || ultimaData;
-        const valor = Math.abs(acumulado);
-        // Histórico autossuficiente para o TXT Domínio: data e valor total do saldo
-        // que este lançamento zera vão no próprio texto (sem vínculo com outro lançamento).
-        gerados.push(
-          ...gerarParRateio(
-            destino,
-            valor,
-            dataMes,
-            `ZERAR SALDO TOTAL R$ ${fmt(valor)} DE ${dataMes} ${contaInvertida.nome} P/ ${destino.name}`,
-            acumulado > 0,
-          ),
-        );
-        acumulado = 0;
-      }
-      return gerados;
+      const valor = Math.abs(saldoTotal);
+      if (valor < 0.005) return [];
+      const data = dataParaZeramento;
+      // Histórico autossuficiente para o TXT Domínio: data e valor total do saldo
+      // que este lançamento zera vão no próprio texto (sem vínculo com outro lançamento).
+      return gerarParRateio(
+        destino,
+        valor,
+        data,
+        `ZERAR SALDO TOTAL R$ ${fmt(valor)} DE ${data} ${contaInvertida.nome} P/ ${destino.name}`,
+        // Conta devedora (saldo > 0) é creditada para voltar a zero; credora, debitada.
+        saldoTotal > 0,
+      );
     },
-    [contaInvertida, lancamentos.todos, natOrigem, ultimaData, gerarParRateio],
+    [contaInvertida, saldoTotal, dataParaZeramento, gerarParRateio],
   );
 
   /** Soma o efeito de linhas geradas sobre origem e destino (partida dobrada). */
@@ -611,7 +678,7 @@ export function RazaoContaRateioModal({
         erro:
           gerados.length === 0
             ? modo === 'zerar'
-              ? `Nenhum mês fechou com saldo invertido em ${contaInvertida.nome} — nada a zerar.`
+              ? `${contaInvertida.nome} já está com saldo zero — nada a zerar.`
               : `Nenhum dia fechou invertido — ${contaInvertida.nome} já está com a natureza correta.`
             : '',
       };
@@ -676,6 +743,7 @@ export function RazaoContaRateioModal({
         return;
       }
       const gerados: VisionBalanceteRow[] = [];
+      let indiceDoPar = 0;
       for (const r of validos) {
         const destino = findContaDestino(r.conta);
         if (!destino) {
@@ -693,6 +761,7 @@ export function RazaoContaRateioModal({
             `RATEIO R$ ${fmt(valor)} PARTE DO TOTAL R$ ${fmt(saldoTotalAbs)} DE ${ultimaData} ${contaInvertida.nome} P/ ${destino.name}`,
             // Saldo devedor: credita a origem (reduz) e debita o destino; credor: inverso.
             saldoTotal >= 0,
+            indiceDoPar++,
           ),
         );
       }
@@ -726,6 +795,7 @@ export function RazaoContaRateioModal({
     }
     onAplicarRateio(preview, previewRemovidos);
     setContaDestino('');
+    setDataZeramentoIso('');
     setRateios([novaRateioRow()]);
     limparPreview();
     onClose();
@@ -788,6 +858,28 @@ export function RazaoContaRateioModal({
             </div>
             <p className="text-[9px] opacity-60 mt-2">{modoInfo.desc}</p>
           </div>
+
+          {/* Zerar saldo: a data vem ANTES da conta — é o mês dela que zera no balancete. */}
+          {modo === 'zerar' && (
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest mb-2">
+                Data do lançamento de zeramento
+              </label>
+              <input
+                type="date"
+                value={dataZeramentoIso}
+                onChange={(e) => {
+                  setDataZeramentoIso(e.target.value);
+                  limparPreview();
+                }}
+                className="w-full px-2 py-1.5 border border-brand-border bg-brand-bg text-[11px] font-mono"
+              />
+              <p className="text-[9px] opacity-60 mt-1">
+                O lançamento entra nesse dia — é o mês dele que vai zerar no balancete.
+                Em branco, usa {dataParaZeramento}.
+              </p>
+            </div>
+          )}
 
           {/* Conta única (todos / invertidos / zerar / compensação) */}
           {precisaContaUnica && (
