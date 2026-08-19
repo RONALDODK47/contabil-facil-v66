@@ -32,6 +32,8 @@ import {
   Sparkles,
   Activity,
   Landmark,
+  Receipt,
+  Users,
 } from 'lucide-react';
 import type { ExtratoConciliacaoResumo } from '../logic/ocrImportMapper';
 import { cn, formatCurrency, formatDate } from '../lib/utils';
@@ -1964,9 +1966,11 @@ export default function ManagerModule({
 
   // Render subtabs
   const tabs: { id: ManagerSubTab; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
+    { id: 'plano', label: 'Plano de Contas', icon: ClipboardList },
     { id: 'extrato', label: 'Conciliação', icon: ArrowRightLeft },
     { id: 'razao', label: 'Balancete', icon: BookOpen },
-    { id: 'plano', label: 'Plano de Contas', icon: ClipboardList },
+    { id: 'fiscal', label: 'Fiscal', icon: Receipt },
+    { id: 'folha', label: 'Folha', icon: Users },
     { id: 'emprestimos', label: 'Empréstimos', icon: DollarSign },
     { id: 'custos', label: 'Custos & Faturamento', icon: BarChart },
     { id: 'indiceLiquidez', label: 'Índice de Liquidez', icon: Activity },
