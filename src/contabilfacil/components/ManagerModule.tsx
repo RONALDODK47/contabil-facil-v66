@@ -83,7 +83,9 @@ import AcoesCommandMenu, { type AcaoMenuItem } from './AcoesCommandMenu';
 import ExtratoPastasModal from './ExtratoPastasModal';
 import {
   countExtratoPastas,
+  listExtratoPastas,
   listExtratoPastasPorBanco,
+  groupExtratoPastasPorBanco,
   saveExtratoNaPasta,
   getExtratoPastaById,
   getExtratoPastaAtivaId,
@@ -2094,8 +2096,9 @@ export default function ManagerModule({
     periodo?: BalancetePeriodo,
     opts?: { todos?: boolean },
   ) => {
-    const conciliadas = extratoConciliacaoStats.conciliadas;
-    if (conciliadas === 0) {
+    const bancoAtivoImport = getExtratoBancoConta(selectedCompany) || contaBancoExtratoAtivo;
+    const conciliadasAberto = extratoConciliacaoStats.conciliadas;
+    if (conciliadasAberto === 0 && countExtratoPastas(selectedCompany) === 0) {
       alert(
         'Nenhum lançamento conciliado para enviar.\n\nPreencha débito e crédito, use Reaplicar contas ou gere regras em Regras de Contas.',
       );
@@ -2107,6 +2110,22 @@ export default function ManagerModule({
     // reenvio forcado (SOBRESCREVER), que rechama este handler sem argumentos.
     const todos = opts?.todos ?? lastConciliacaoTodosRef.current;
     if (todos) lastConciliacaoTodosRef.current = true;
+
+    /**
+     * Universo a importar. Antes daqui saia `extratoLancamentos` -- so o extrato
+     * ABERTO na tela -- entao "IMPORTAR TUDO" deixava de fora todos os meses ja
+     * conciliados e guardados em pastas, e todos os outros bancos da empresa.
+     * Agora usa o mesmo coletor da exportacao TXT+: extrato aberto + pastas
+     * salvas; e em "TUDO", de todos os bancos.
+     */
+    const universoImport = todos
+      ? coletarGruposTodosOsBancos(bancoAtivoImport).flatMap((g) => g.rows)
+      : coletarLancamentosExtratoParaExport(bancoAtivoImport);
+    if (universoImport.filter(isExtratoLancamentoConciliado).length === 0) {
+      alert('Nenhum lancamento conciliado para enviar ao balancete.');
+      lastConciliacaoTodosRef.current = false;
+      return;
+    }
 
     const periodoEfetivo = todos ? null : (periodo ?? lastPeriodoConciliacaoRef.current);
     if (!todos && !periodoEfetivo) {
@@ -2124,10 +2143,10 @@ export default function ManagerModule({
     // Datas que o parser nao reconhece ("2026/06/15", "JUN/26", vazia) nao caem em
     // periodo NENHUM: quem importava mes a mes nunca via essas linhas chegarem ao
     // balancete e nao recebia aviso. Separa e informa no fim.
-    const semDataReconhecida: typeof extratoLancamentos = [];
+    const semDataReconhecida: typeof universoImport = [];
     const lancamentosNoPeriodo = !periodoEfetivo
-      ? extratoLancamentos
-      : extratoLancamentos.filter((lan) => {
+      ? universoImport
+      : universoImport.filter((lan) => {
           const br = parseDataRazao(lan.date); // "DD/MM/AAAA" (ou "" se não reconhecer)
           const m = br.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
           if (!m) {
@@ -2240,8 +2259,10 @@ export default function ManagerModule({
       alert(msg);
     }
   }, [
+    contaBancoExtratoAtivo,
     extratoConciliacaoStats.conciliadas,
     extratoLancamentos,
+    planoParaResolver,
     selectedCompany,
     forceOverwriteBalancete,
   ]);
@@ -2588,11 +2609,19 @@ export default function ManagerModule({
    * duplicatas — a pasta salva e o extrato aberto normalmente são o mesmo
    * conjunto de linhas.
    */
-  const coletarLancamentosExtratoParaExport = (banco: string): BankStatement[] => {
+  const coletarLancamentosExtratoParaExport = (
+    banco: string,
+    opts?: { incluirExtratoAberto?: boolean },
+  ): BankStatement[] => {
+    // O extrato aberto na tela pertence à conta banco ATIVA. Ao varrer outros
+    // bancos (EXPORTAR/IMPORTAR TUDO) ele não pode entrar, senão as linhas do
+    // banco ativo seriam contabilizadas de novo com a conta banco errada.
+    const incluirAberto = opts?.incluirExtratoAberto !== false;
+    const lancamentosAbertos = incluirAberto ? extratoLancamentos : [];
     // IDs do extrato aberto — essas linhas JÁ tiveram regras aplicadas no
     // reload/onChange e chegam aqui com D/C corretos. Não devem ser re-processadas.
     const idsExtratoAberto = new Set<string>(
-      extratoLancamentos.map((r) => r.id).filter(Boolean) as string[],
+      lancamentosAbertos.map((r) => r.id).filter(Boolean) as string[],
     );
 
     const out: BankStatement[] = [];
@@ -2605,7 +2634,7 @@ export default function ManagerModule({
     };
 
     // O extrato aberto entra primeiro: já passou pelo soAplicarRegras no reload.
-    for (const row of extratoLancamentos) adicionar(row);
+    for (const row of lancamentosAbertos) adicionar(row);
 
     // Linhas de pastas de meses anteriores (não duplicadas no extrato aberto).
     // Mantém separado por pasta para logar cada mês individualmente.
@@ -2620,7 +2649,7 @@ export default function ManagerModule({
     }
 
     addDebugLog(
-      `── COLETAR EXPORT banco=${banco} extrato_aberto=${extratoLancamentos.length} pastas=${pastas.length}`,
+      `── COLETAR EXPORT banco=${banco} extrato_aberto=${lancamentosAbertos.length} pastas=${pastas.length}`,
       'exportação',
     );
 
@@ -2701,6 +2730,49 @@ export default function ManagerModule({
     return out.sort((a, b) => (toIsoDate(a.date) || a.date).localeCompare(toIsoDate(b.date) || b.date));
   };
 
+  /**
+   * "TUDO" = todos os bancos, não só a conta banco aberta na tela.
+   *
+   * Retorna um grupo por conta banco: o banco ativo (extrato aberto + pastas
+   * salvas dele) e cada outro banco que tenha pastas salvas na empresa. Os
+   * grupos ficam separados de propósito — a partida dobrada do TXT+ e o
+   * lançamento no razão usam a conta banco do grupo, então misturar bancos num
+   * único universo jogaria lançamento no banco errado.
+   */
+  const coletarGruposTodosOsBancos = (
+    bancoAtivo: string,
+  ): Array<{ banco: string; rows: BankStatement[] }> => {
+    const grupos: Array<{ banco: string; rows: BankStatement[] }> = [];
+    const vistos = new Set<string>();
+    const chave = (b: string) => b.replace(/\D/g, '') || b.trim();
+
+    const ativo = bancoAtivo.trim();
+    grupos.push({ banco: ativo, rows: coletarLancamentosExtratoParaExport(ativo) });
+    if (ativo) vistos.add(chave(ativo));
+
+    let outros: string[] = [];
+    try {
+      outros = groupExtratoPastasPorBanco(listExtratoPastas(selectedCompany))
+        .map((g) => g.contaBanco)
+        .filter((b) => b && b.trim());
+    } catch {
+      outros = [];
+    }
+    for (const banco of outros) {
+      if (vistos.has(chave(banco))) continue;
+      vistos.add(chave(banco));
+      const rows = coletarLancamentosExtratoParaExport(banco, { incluirExtratoAberto: false });
+      if (rows.length > 0) grupos.push({ banco, rows });
+    }
+    addDebugLog(
+      `── TUDO: ${grupos.length} banco(s) — ${grupos
+        .map((g) => `${g.banco || '(sem conta)'}:${g.rows.length}`)
+        .join(', ')}`,
+      'exportação',
+    );
+    return grupos;
+  };
+
   // Exportação TXT+ partida dobrada Domínio (mesmo formato da interface antiga)
   const handleExportTxt = (periodoExtrato?: BalancetePeriodo) => {
     try {
@@ -2709,7 +2781,12 @@ export default function ManagerModule({
 
       if (activeSubTab === 'extrato') {
         const banco = getExtratoBancoConta(selectedCompany) || contaBancoExtratoAtivo;
-        const universo = coletarLancamentosExtratoParaExport(banco);
+        // Sem período = "EXPORTAR TUDO": tudo mesmo, de TODOS os bancos da
+        // empresa. Com período, só o banco aberto na tela.
+        const grupos = periodoExtrato
+          ? [{ banco, rows: coletarLancamentosExtratoParaExport(banco) }]
+          : coletarGruposTodosOsBancos(banco);
+        const universo = grupos.flatMap((g) => g.rows);
         if (universo.length === 0) {
           alert('Nenhum lançamento de extrato para exportar.');
           return;
@@ -2749,20 +2826,34 @@ export default function ManagerModule({
               (semDataNoArquivo.length > 10 ? `\n… e mais ${semDataNoArquivo.length - 10}.` : ''),
           );
         }
-        content = buildTxtPlusFromExtratoRows(
-          lancamentosFiltrados.map((e) => ({
-            date: e.date,
-            description: e.description,
-            value: e.value,
-            nature: e.nature,
-            accountDebit: e.accountDebit,
-            accountCredit: e.accountCredit,
-            accountCode: e.accountCode,
-            operationName: e.operationName || e.description,
-          })),
-          banco,
-        );
-        const bancoNomeExport = (getExtratoBancoNome(selectedCompany) || banco || 'banco')
+        // Um bloco por banco: a partida dobrada precisa da conta banco do
+        // próprio grupo, senão o lançamento de um banco sai no outro.
+        const dentroDoPeriodo = new Set(lancamentosFiltrados);
+        content = grupos
+          .map((g) =>
+            buildTxtPlusFromExtratoRows(
+              g.rows
+                .filter((e) => dentroDoPeriodo.has(e))
+                .map((e) => ({
+                  date: e.date,
+                  description: e.description,
+                  value: e.value,
+                  nature: e.nature,
+                  accountDebit: e.accountDebit,
+                  accountCredit: e.accountCredit,
+                  accountCode: e.accountCode,
+                  operationName: e.operationName || e.description,
+                })),
+              g.banco,
+            ),
+          )
+          .filter((bloco) => bloco.trim())
+          .join(String.fromCharCode(13, 10));
+        const bancoNomeExport = (
+          grupos.length > 1
+            ? 'TODOS_OS_BANCOS'
+            : getExtratoBancoNome(selectedCompany) || banco || 'banco'
+        )
           .toUpperCase()
           .replace(/[^A-Z0-9]+/g, '_')
           .replace(/^_+|_+$/g, '');
