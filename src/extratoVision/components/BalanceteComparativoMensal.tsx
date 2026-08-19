@@ -2362,25 +2362,20 @@ function ComparativoMensalInner({
     };
   }, [contabil, setPeriodToolbar, periodToolbarNode]);
 
-  if (!razaoRows.length) {
-    return <p className="text-[11px] text-slate-400">Importe o razão com datas para o comparativo.</p>;
-  }
-
-  if (calculando && !periodosSelecionados.length) {
-    return (
-      <p className="text-[11px] text-slate-400">
-        Montando comparativo… {progresso || 'filtrando meses com movimento…'}
-      </p>
-    );
-  }
-
-  if (!periodosSelecionados.length) {
-    return (
-      <p className="text-[11px] text-amber-300/90">
-        Nenhum mês com débito/crédito entre {periodoDe} e {periodoAte}. Ajuste o período ou importe o razão.
-      </p>
-    );
-  }
+  /**
+   * Sem razão / sem mês com movimento a tela NÃO é mais substituída por um
+   * parágrafo: antes esses três casos davam early return e levavam junto todas
+   * as opções do balancete (filtros, busca, tela cheia, configurações). Agora
+   * vira só um aviso no topo e o resto da aba continua à mostra, com a tabela
+   * vazia.
+   */
+  const avisoVazio = !razaoRows.length
+    ? 'Importe o razão com datas para montar o comparativo. As opções do balancete seguem disponíveis.'
+    : calculando && !periodosSelecionados.length
+      ? `Montando comparativo… ${progresso || 'filtrando meses com movimento…'}`
+      : !periodosSelecionados.length
+        ? `Nenhum mês com débito/crédito entre ${periodoDe} e ${periodoAte}. Ajuste o período ou importe o razão.`
+        : '';
 
   return (
     <div
@@ -2390,6 +2385,18 @@ function ComparativoMensalInner({
           : 'relative space-y-3'
       }
     >
+      {avisoVazio ? (
+        <p
+          className={
+            contabil
+              ? 'technical-panel px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50/40 border-amber-600/40'
+              : 'rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-200/90'
+          }
+        >
+          {avisoVazio}
+        </p>
+      ) : null}
+
       {!contabil && (
         <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/15 p-3 space-y-2">
           <p className="text-[10px] text-slate-400">

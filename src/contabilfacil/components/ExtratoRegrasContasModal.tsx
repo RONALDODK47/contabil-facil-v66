@@ -1,5 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Building2, Copy, FolderInput, ListOrdered, Plus, Trash2, Users, X } from 'lucide-react';
+import {
+  Building2,
+  Coins,
+  Copy,
+  FolderInput,
+  ListOrdered,
+  Plus,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { ExtratoRegraConta, ExtratoRegraContaNature } from '../logic/extratoRegrasContasStorage';
 import {
@@ -29,8 +39,11 @@ import { CF_FORM_INPUT_LONG } from '../lib/formFieldClasses';
 import ExtratoContaPicker from './ExtratoContaPicker';
 import ExtratoHistoricoPicker from './ExtratoHistoricoPicker';
 import ExtratoLancamentoValorPicker, {
+  formatDataBR,
   formatValorBR,
   lancamentoValorKey,
+  parseValorBuscado,
+  toleranciaAproximada,
   type ExtratoLancamentoValor,
 } from './ExtratoLancamentoValorPicker';
 import FolhaLiquidosImportModal from './FolhaLiquidosImportModal';
@@ -74,6 +87,8 @@ const INPUT_REGRA_CLS = cn(
 const REGRAS_CONTENT_MAX = 'w-full max-w-3xl mx-auto';
 
 type RegraEditableRowProps = {
+  /** Datas do extrato em que esse valor aparece — só usado nas regras POR VALOR. */
+  datasExtrato?: string[];
   regra: ExtratoRegraConta;
   planoOptions: PlanoOption[];
   planoLookup: PlanoOption[];
@@ -81,8 +96,17 @@ type RegraEditableRowProps = {
   onRemove: (id: string) => void;
 };
 
+/** Resumo curto das datas do extrato para exibir na linha da regra. */
+function resumoDatasRegra(datas: string[] | undefined): string {
+  const list = (datas || []).filter(Boolean).map(formatDataBR);
+  if (list.length === 0) return '';
+  if (list.length <= 4) return list.join(' · ');
+  return `${list.slice(0, 4).join(' · ')} +${list.length - 4}`;
+}
+
 const ExtratoRegraContaEditableRow = memo(function ExtratoRegraContaEditableRow({
   regra,
+  datasExtrato,
   planoOptions,
   planoLookup,
   onUpdate,
@@ -125,6 +149,14 @@ const ExtratoRegraContaEditableRow = memo(function ExtratoRegraContaEditableRow(
             <span className="text-[8px] font-semibold uppercase text-brand-text/60 min-w-0 break-words">
               {regra.funcionario || regra.descricao || 'SEM HISTÓRICO'}
             </span>
+            {resumoDatasRegra(datasExtrato) ? (
+              <span
+                className="text-[8px] font-bold uppercase tabular-nums text-emerald-800/80 w-full"
+                title={(datasExtrato || []).map(formatDataBR).join(' · ')}
+              >
+                Datas: {resumoDatasRegra(datasExtrato)}
+              </span>
+            ) : null}
           </div>
         ) : null}
         {porDocumento ? (
@@ -249,8 +281,11 @@ export default memo(function ExtratoRegrasContasModal({
   const [lancamentoValorPick, setLancamentoValorPick] = useState('');
   const [folhaOpen, setFolhaOpen] = useState(false);
   const [folhaMsg, setFolhaMsg] = useState('');
-  /** Regras importadas de relatório ficam numa "pasta" separada das manuais. */
-  const [abaLista, setAbaLista] = useState<'manuais' | 'importadas'>('manuais');
+  /**
+   * Pastas da lista: manuais por histórico, manuais por valor e importadas de
+   * relatório. As três nunca se misturam.
+   */
+  const [abaLista, setAbaLista] = useState<'historico' | 'valor' | 'importadas'>('historico');
   const [bancoSavedOk, setBancoSavedOk] = useState(false);
   const [addError, setAddError] = useState('');
   const [replicateTarget, setReplicateTarget] = useState('');
@@ -340,7 +375,7 @@ export default memo(function ExtratoRegrasContasModal({
     setLancamentoValorPick('');
     setFolhaOpen(false);
     setFolhaMsg('');
-    setAbaLista('manuais');
+    setAbaLista('historico');
     setBancoSavedOk(false);
     setAddError('');
     setReplicateTarget('');
@@ -361,16 +396,45 @@ export default memo(function ExtratoRegrasContasModal({
     () => regrasDoBanco.filter((r) => r.origem !== 'folha_liquidos'),
     [regrasDoBanco],
   );
+  /** Manuais por valor ficam fora da pasta de histórico — são critérios distintos. */
+  const regrasManuaisValor = useMemo(
+    () => regrasManuais.filter((r) => isRegraPorValor(r)),
+    [regrasManuais],
+  );
+  const regrasManuaisHistorico = useMemo(
+    () => regrasManuais.filter((r) => !isRegraPorValor(r)),
+    [regrasManuais],
+  );
   const regrasImportadas = useMemo(
     () => regrasDoBanco.filter((r) => r.origem === 'folha_liquidos'),
     [regrasDoBanco],
   );
 
-  const regrasDaAba = abaLista === 'importadas' ? regrasImportadas : regrasManuais;
+  const regrasDaAba =
+    abaLista === 'importadas'
+      ? regrasImportadas
+      : abaLista === 'valor'
+        ? regrasManuaisValor
+        : regrasManuaisHistorico;
 
   const filteredRegrasDoBanco = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return regrasDaAba;
+    // Digitando um número, regras com valor próximo (±2%) também entram — a
+    // lista sai ordenada do valor mais perto do procurado para o mais longe.
+    const alvo = parseValorBuscado(searchTerm);
+    if (alvo !== undefined) {
+      const tolerancia = toleranciaAproximada(alvo);
+      const porValor = regrasDaAba
+        .map((regra) => ({ regra, valor: normalizeRegraValor(regra.valor) }))
+        .filter(
+          (x): x is { regra: ExtratoRegraConta; valor: number } =>
+            x.valor !== undefined && Math.abs(x.valor - alvo) <= tolerancia,
+        )
+        .sort((a, b) => Math.abs(a.valor - alvo) - Math.abs(b.valor - alvo))
+        .map((x) => x.regra);
+      if (porValor.length > 0) return porValor;
+    }
     return regrasDaAba.filter((regra) => {
       const desc = (regra.descricao || '').toLowerCase();
       const nome = (regra.nome || '').toLowerCase();
@@ -451,9 +515,11 @@ export default memo(function ExtratoRegrasContasModal({
       const nature: ExtratoRegraContaNature = row.nature === 'C' ? 'C' : 'D';
       const descricao = String(row.description ?? '').replace(/\s+/g, ' ').trim();
       const key = `${nature}|${Math.round(valor * 100)}|${descricao.toUpperCase()}`;
+      const data = String(row.date ?? '').trim();
       const cur = map.get(key);
       if (cur) {
         cur.ocorrencias += 1;
+        if (data && !cur.datas?.includes(data)) cur.datas?.push(data);
         continue;
       }
       map.set(key, {
@@ -461,6 +527,7 @@ export default memo(function ExtratoRegrasContasModal({
         nature,
         valor,
         ocorrencias: 1,
+        datas: data ? [data] : [],
         semRegra: semRegraKeys.has(key),
       });
     }
@@ -468,6 +535,31 @@ export default memo(function ExtratoRegrasContasModal({
       (a, b) => Number(b.semRegra) - Number(a.semRegra) || b.valor - a.valor,
     );
   }, [extratoSample, uncoveredRows]);
+
+  /** Datas do extrato por natureza+valor — alimenta as linhas das regras POR VALOR. */
+  const datasPorValor = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const row of extratoSample) {
+      const valor = normalizeRegraValor(row.value);
+      if (valor === undefined) continue;
+      const data = String(row.date ?? '').trim();
+      if (!data) continue;
+      const key = `${row.nature === 'C' ? 'C' : 'D'}|${Math.round(valor * 100)}`;
+      const cur = map.get(key);
+      if (!cur) map.set(key, [data]);
+      else if (!cur.includes(data)) cur.push(data);
+    }
+    return map;
+  }, [extratoSample]);
+
+  const datasDaRegra = useCallback(
+    (regra: ExtratoRegraConta): string[] | undefined => {
+      const valor = normalizeRegraValor(regra.valor);
+      if (valor === undefined) return undefined;
+      return datasPorValor.get(`${regra.nature === 'C' ? 'C' : 'D'}|${Math.round(valor * 100)}`);
+    },
+    [datasPorValor],
+  );
 
   const outrosBancos = useMemo(() => {
     const atual = sanitizeCodigoReduzido(selectedBanco) || selectedBanco.trim();
@@ -715,7 +807,12 @@ export default memo(function ExtratoRegrasContasModal({
   const handleRemoveAllDaAba = useCallback(() => {
     if (regrasDaAba.length === 0 || !selectedBanco.trim()) return;
     const label = bancoLabel(selectedBanco);
-    const grupo = abaLista === 'importadas' ? 'importadas de relatório' : 'manuais';
+    const grupo =
+      abaLista === 'importadas'
+        ? 'importadas de relatório'
+        : abaLista === 'valor'
+          ? 'manuais por valor'
+          : 'manuais por histórico';
     const msg = `Remover todas as ${regrasDaAba.length} regra(s) ${grupo} do banco ${label}? Esta ação não pode ser desfeita.`;
     if (!window.confirm(msg)) return;
     const alvo = new Set(regrasDaAba.map((r) => r.id));
@@ -1137,31 +1234,54 @@ export default memo(function ExtratoRegrasContasModal({
                     title={
                       abaLista === 'importadas'
                         ? 'Remove todas as regras importadas de relatório neste banco'
-                        : 'Remove todas as regras manuais deste banco'
+                        : abaLista === 'valor'
+                          ? 'Remove todas as regras manuais por valor deste banco'
+                          : 'Remove todas as regras manuais por histórico deste banco'
                     }
                   >
                     <Trash2 size={11} aria-hidden="true" />
-                    Remover todas ({abaLista === 'importadas' ? 'importadas' : 'manuais'})
+                    Remover todas (
+                    {abaLista === 'importadas'
+                      ? 'importadas'
+                      : abaLista === 'valor'
+                        ? 'manuais valor'
+                        : 'manuais histórico'}
+                    )
                   </button>
                 ) : null}
               </div>
 
-              {/* Pastas: manuais e importadas de relatório nunca se misturam na lista. */}
-              <div className="flex items-stretch border border-brand-border w-full max-w-md">
+              {/* Pastas: histórico, valor e importadas de relatório nunca se misturam na lista. */}
+              <div className="flex items-stretch border border-brand-border w-full max-w-2xl">
                 <button
                   type="button"
-                  aria-pressed={abaLista === 'manuais'}
+                  aria-pressed={abaLista === 'historico'}
                   onClick={() => {
-                    setAbaLista('manuais');
+                    setAbaLista('historico');
                     setSearchTerm('');
                   }}
                   className={cn(
                     'flex-1 text-[8px] font-black uppercase px-2 py-1.5 inline-flex items-center justify-center gap-1',
-                    abaLista === 'manuais' ? 'bg-brand-text text-white' : 'bg-transparent',
+                    abaLista === 'historico' ? 'bg-brand-text text-white' : 'bg-transparent',
                   )}
                 >
                   <ListOrdered size={11} aria-hidden="true" />
-                  Regras manuais · {regrasManuais.length}
+                  Regras manuais histórico · {regrasManuaisHistorico.length}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={abaLista === 'valor'}
+                  onClick={() => {
+                    setAbaLista('valor');
+                    setSearchTerm('');
+                  }}
+                  className={cn(
+                    'flex-1 text-[8px] font-black uppercase px-2 py-1.5 border-l border-brand-border inline-flex items-center justify-center gap-1',
+                    abaLista === 'valor' ? 'bg-emerald-600 text-white' : 'bg-transparent',
+                  )}
+                >
+                  <Coins size={11} aria-hidden="true" />
+                  Regras manuais valor · {regrasManuaisValor.length}
                 </button>
                 <button
                   type="button"
@@ -1184,7 +1304,9 @@ export default memo(function ExtratoRegrasContasModal({
                 <p className="text-[8px] text-brand-text/50 leading-snug">
                   {abaLista === 'importadas'
                     ? 'Geradas pela importação do relatório de folha, agrupadas por funcionário. Editar aqui não altera as regras manuais.'
-                    : 'Edite descrição, natureza ou contrapartida diretamente em cada regra. As alterações são salvas ao sair do campo ou ao trocar a conta.'}
+                    : abaLista === 'valor'
+                      ? 'Regras que casam pelo valor exato do lançamento. Edite natureza ou contrapartida diretamente em cada regra.'
+                      : 'Edite descrição, natureza ou contrapartida diretamente em cada regra. As alterações são salvas ao sair do campo ou ao trocar a conta.'}
                 </p>
               ) : null}
 
@@ -1192,7 +1314,9 @@ export default memo(function ExtratoRegrasContasModal({
                 <p className="text-[10px] text-brand-text/45 italic text-center py-8">
                   {abaLista === 'importadas'
                     ? 'Nenhuma regra importada neste banco. Use "Importar folha (PDF)" acima.'
-                    : 'Nenhuma regra manual para este banco. Cadastre acima ou puxe um histórico do extrato.'}
+                    : abaLista === 'valor'
+                      ? 'Nenhuma regra por valor neste banco. Cadastre acima escolhendo o modo "Por valor".'
+                      : 'Nenhuma regra manual por histórico para este banco. Cadastre acima ou puxe um histórico do extrato.'}
                 </p>
               ) : (
                 <>
@@ -1202,7 +1326,9 @@ export default memo(function ExtratoRegrasContasModal({
                       placeholder={
                         abaLista === 'importadas'
                           ? 'Buscar por funcionário, documento ou código…'
-                          : 'Buscar por nome ou código…'
+                          : abaLista === 'valor'
+                            ? 'Buscar por valor aproximado (ex.: 1.873) ou nome…'
+                            : 'Buscar por nome ou código…'
                       }
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
@@ -1222,6 +1348,7 @@ export default memo(function ExtratoRegrasContasModal({
                               <ExtratoRegraContaEditableRow
                                 key={regra.id}
                                 regra={regra}
+                                datasExtrato={datasDaRegra(regra)}
                                 planoOptions={planoOptions}
                                 planoLookup={planoLookup}
                                 onUpdate={handleUpdateRegra}
@@ -1238,6 +1365,7 @@ export default memo(function ExtratoRegrasContasModal({
                         <ExtratoRegraContaEditableRow
                           key={regra.id}
                           regra={regra}
+                          datasExtrato={datasDaRegra(regra)}
                           planoOptions={planoOptions}
                           planoLookup={planoLookup}
                           onUpdate={handleUpdateRegra}

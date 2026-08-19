@@ -348,7 +348,7 @@ export default function BalanceteTabPanel({
             </button>
           )}
         </div>
-        {periodoConfirmado && (
+        {periodToolbar && (
           <div className="w-full min-w-0">{periodToolbar}</div>
         )}
         {periodoRazao.min && periodoRazao.max ? (
@@ -384,19 +384,22 @@ export default function BalanceteTabPanel({
         </div>
       )}
 
-      {periodoConfirmado && (
+      {(
         // Monta mesmo com razão vazio/zerado (não só quando temRazao): é este
         // componente que empurra a toolbar (Configuração/Exportar PDF/PDF
         // Invertidas/Aplicar Automações) pro slot acima via setPeriodToolbar,
         // ANTES do seu próprio "early return" de tela vazia — sem montar, a
         // toolbar inteira sumia junto com o balancete zerado.
+        // Fica visível mesmo sem período confirmado e sem lançamentos: o
+        // comparativo mostra um aviso no topo e mantém todas as opções
+        // (filtros, busca, tela cheia, configurações) à mostra.
         <div className="-mx-4 md:-mx-6 -mb-4 md:-mb-6">
           <ContabilBalanceteComparativo
             razaoRows={razaoRows}
             planoRows={planoVision}
             onRazaoRowsChange={onRazaoRowsChange}
-            periodoDe={periodoConfirmado.de}
-            periodoAte={periodoConfirmado.ate}
+            periodoDe={periodoConfirmado?.de ?? periodoRazao.min ?? ''}
+            periodoAte={periodoConfirmado?.ate ?? periodoRazao.max ?? ''}
             folhaRows={folhaVision}
             fiscalRows={[]}
             empresaNome={selectedCompany}
