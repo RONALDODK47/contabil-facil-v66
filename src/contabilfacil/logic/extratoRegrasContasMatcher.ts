@@ -1,5 +1,82 @@
 import type { ExtratoRegraConta } from './extratoRegrasContasStorage';
-import { normalizeExtratoMatchText } from './extratoRegrasContasStorage';
+import {
+  competenciaAceitaData,
+  isRegraPorDocumento,
+  isRegraPorValor,
+  normalizeExtratoMatchText,
+  normalizeRegraValor,
+  regraValorCombina,
+  somenteDigitos,
+} from './extratoRegrasContasStorage';
+
+/**
+ * Regra por VALOR vence qualquer regra por histórico: o usuário apontou o
+ * lançamento exato (valor + natureza), não há match mais específico que isso.
+ */
+const SCORE_REGRA_POR_VALOR = 10000;
+
+/** Documento completo no histórico — evidência tão forte quanto o valor exato. */
+const SCORE_DOCUMENTO_COMPLETO = 9000;
+/** Fragmento (CPF mascarado: só o começo ou só o fim aparece no histórico). */
+const SCORE_DOCUMENTO_FRAGMENTO = 7000;
+
+/**
+ * Menor pedaço de documento aceito no histórico. Abaixo de 5 dígitos o risco de
+ * casar com NSU/agência/valor é grande demais.
+ */
+const DOC_MIN_FRAGMENTO = 5;
+
+/** Sequências de dígitos do histórico (o banco imprime CPF de várias formas). */
+function digitRunsDoHistorico(historico: string): string[] {
+  return (historico.match(/\d+/g) ?? []).filter((r) => r.length >= DOC_MIN_FRAGMENTO);
+}
+
+/**
+ * Casa o documento da regra (CPF/RG) com o histórico, tolerando MASCARAMENTO.
+ *
+ * O banco quase sempre imprime o CPF parcialmente ("***.456.789-**",
+ * "CPF 123.456.***-**"): sobra um pedaço contíguo do começo OU do fim do
+ * número. Por isso a busca vai ENCURTANDO o documento — primeiro o número
+ * inteiro, depois prefixos e sufixos cada vez menores — e para no primeiro
+ * pedaço que aparece no histórico.
+ *
+ * Devolve 0 quando não casa; quanto maior o pedaço reconhecido, maior o score.
+ */
+export function scoreDocumentoNoHistorico(historico: string, documentoRegra: string): number {
+  const doc = somenteDigitos(documentoRegra);
+  if (doc.length < DOC_MIN_FRAGMENTO) return 0;
+
+  const runs = digitRunsDoHistorico(historico);
+  if (runs.length === 0) return 0;
+
+  // 1) Documento inteiro — solto no texto ou colado com pontuação
+  //    ("123.456.789-00" vira um run só depois de juntar os dígitos da linha).
+  const todosDigitos = historico.replace(/\D/g, '');
+  if (runs.includes(doc) || todosDigitos.includes(doc)) {
+    return SCORE_DOCUMENTO_COMPLETO + doc.length;
+  }
+
+  // 2) Encurtando: prefixos e sufixos do documento, do maior para o menor.
+  for (let len = doc.length - 1; len >= DOC_MIN_FRAGMENTO; len--) {
+    const prefixo = doc.slice(0, len);
+    const sufixo = doc.slice(doc.length - len);
+    for (const run of runs) {
+      // O pedaço precisa ser o run inteiro (o resto do número está mascarado)
+      // ou aparecer dentro de um run maior do próprio documento.
+      if (run === prefixo || run === sufixo) return SCORE_DOCUMENTO_FRAGMENTO + len;
+    }
+    if (todosDigitos.includes(prefixo) || todosDigitos.includes(sufixo)) {
+      return SCORE_DOCUMENTO_FRAGMENTO + len - 1;
+    }
+  }
+
+  // 3) Pedaço do MEIO do documento (máscara que tapa as pontas) — exige mais
+  //    dígitos para não casar por acaso.
+  for (const run of runs) {
+    if (run.length >= 8 && doc.includes(run)) return SCORE_DOCUMENTO_FRAGMENTO - 500 + run.length;
+  }
+  return 0;
+}
 
 export type ExtratoRegraContaMatch = ExtratoRegraConta & { score: number };
 
@@ -400,10 +477,44 @@ export function matchExtratoRegraConta(
   historicoNormalizado: string,
   nature: 'D' | 'C',
   regras: ExtratoRegraConta[] | null | undefined,
+  /** Valor do lançamento — habilita as regras cadastradas por valor. */
+  valorLinha?: number,
+  /** Data do lançamento (ISO ou BR) — aplica a janela de competência das regras. */
+  dataLinha?: string,
 ): ExtratoRegraContaMatch | null {
   if (!regras?.length) return null;
+
+  /** Regra amarrada a uma competência só vale nas datas da janela dela. */
+  const dentroDaCompetencia = (regra: ExtratoRegraConta) =>
+    competenciaAceitaData(regra.competencia, regra.competenciaJanela, dataLinha);
+
+  const elegivel = (regra: ExtratoRegraConta) =>
+    Boolean(regra.contaContrapartida.trim()) && regra.nature === nature && dentroDaCompetencia(regra);
+
+  // 1) Regras por VALOR — casamento exato (valor + natureza), tem prioridade.
+  if (normalizeRegraValor(valorLinha) !== undefined) {
+    for (const regra of regras) {
+      if (!elegivel(regra) || !isRegraPorValor(regra)) continue;
+      if (regraValorCombina(regra.valor, valorLinha)) {
+        return { ...regra, score: SCORE_REGRA_POR_VALOR };
+      }
+    }
+  }
+
   const hist = normalizeExtratoMatchText(historicoNormalizado);
   if (!hist) return null;
+
+  // 2) Regras por DOCUMENTO (CPF/RG no histórico) — vence o casamento por texto.
+  //    Entre várias, ganha a que reconheceu o maior pedaço do documento.
+  let melhorDoc: ExtratoRegraContaMatch | null = null;
+  for (const regra of regras) {
+    if (!elegivel(regra) || !isRegraPorDocumento(regra)) continue;
+    const score = scoreDocumentoNoHistorico(hist, regra.documento ?? '');
+    if (score > 0 && (!melhorDoc || score > melhorDoc.score)) {
+      melhorDoc = { ...regra, score };
+    }
+  }
+  if (melhorDoc) return melhorDoc;
 
   type Candidata = {
     regra: ExtratoRegraConta;
@@ -414,8 +525,9 @@ export function matchExtratoRegraConta(
 
   const candidatas: Candidata[] = [];
   for (const regra of regras) {
-    if (!regra.contaContrapartida.trim()) continue;
-    if (regra.nature !== nature) continue;
+    if (!elegivel(regra)) continue;
+    // Regra por valor/documento nunca casa por texto — o histórico ali é só referência.
+    if (isRegraPorValor(regra) || isRegraPorDocumento(regra)) continue;
     const score = scoreRegraNoHistorico(hist, regra);
     if (score <= 0) continue;
     const descNorm = normalizeExtratoMatchText(regra.descricao);

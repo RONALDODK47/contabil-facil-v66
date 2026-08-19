@@ -13,6 +13,7 @@ import {
 } from './extratoRegrasCobertura';
 import type { ExtratoRegraConta } from './extratoRegrasContasStorage';
 import {
+  isRegraPorValor,
   normalizeExtratoMatchText,
   normContaBancoCode,
 } from './extratoRegrasContasStorage';
@@ -65,6 +66,11 @@ export function consolidateExtratoRegras(
 
   for (const r of regras) {
     const nature = r.nature === 'C' ? 'C' : 'D';
+    // Regra por valor é única por definição — nunca é mesclada com outra.
+    if (isRegraPorValor(r)) {
+      groups.set(`valor|${r.id}`, r);
+      continue;
+    }
     const entityDesc = extractRegraEntityDescricao(r.descricao, nature, coligadas);
     if (!entityDesc) {
       groups.set(`raw|${r.id}`, r);
@@ -156,6 +162,7 @@ export function mergeSugestoesIntoRegras(input: {
 
     const sameEntity = next.find(
       (r) =>
+        !isRegraPorValor(r) &&
         normContaBancoCode(r.contaBanco) === normContaBancoCode(banco) &&
         r.nature === nature &&
         normalizeExtratoMatchText(

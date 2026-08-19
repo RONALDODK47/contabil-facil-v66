@@ -829,7 +829,13 @@ export function resolveExtratoContasDebitoCredito(
       input.contaBancoPreferida,
       bancoCanon,
     );
-  const regraHit = matchExtratoRegraConta(significado, input.nature, regrasDoBanco);
+  const regraHit = matchExtratoRegraConta(
+    significado,
+    input.nature,
+    regrasDoBanco,
+    input.value,
+    input.date,
+  );
   if (regraHit) {
     // ┌─────────────────────────────────────────────────────────────────────────┐
     // │  REGRA DE CONCILIAÇÃO — LEIA ANTES DE ALTERAR ESTE BLOCO               │

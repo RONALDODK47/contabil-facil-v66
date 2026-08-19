@@ -79,7 +79,7 @@ export function findUncoveredExtratoRows(
     const hist = normalizeExtratoMatchText(row.description);
     if (!hist) continue;
 
-    const hit = matchExtratoRegraConta(hist, nature, regrasDoBanco);
+    const hit = matchExtratoRegraConta(hist, nature, regrasDoBanco, row.value);
     if (!hit) {
       const originalDescription = String(row.description ?? '').replace(/\s+/g, ' ').trim();
       uncovered.push({

@@ -79,6 +79,7 @@ import PlanoContasVirtualTable, { type PlanoContaRow } from './PlanoContasVirtua
 import ExtratoLancamentosVirtualTable from './ExtratoLancamentosVirtualTable';
 import ExtratoSemNotaModal from './ExtratoSemNotaModal';
 import ExtratoRegrasContasModal from './ExtratoRegrasContasModal';
+import AcoesCommandMenu, { type AcaoMenuItem } from './AcoesCommandMenu';
 import ExtratoPastasModal from './ExtratoPastasModal';
 import {
   countExtratoPastas,
@@ -1846,6 +1847,7 @@ export default function ManagerModule({
         description: e.description,
         nature: e.nature,
         value: e.value,
+        date: e.date,
       })),
     [extratoLancamentos],
   );
@@ -2457,6 +2459,111 @@ export default function ManagerModule({
       alert(msg);
     }
   };
+
+  /**
+   * Todas as ações da conciliação num menu único com busca.
+   *
+   * As que dependem de um extrato carregado continuam aparecendo na lista
+   * (desabilitadas, com o motivo) — assim o usuário acha a opção pela busca e
+   * entende por que ela não está disponível, em vez de o botão simplesmente
+   * sumir da tela.
+   */
+  const temExtrato = extratoLancamentos.length > 0;
+  const semExtratoMotivo = 'Importe ou abra um extrato primeiro';
+
+  const acoesConciliacao = useMemo<AcaoMenuItem[]>(
+    () => [
+      {
+        id: 'aplicar-regras',
+        label: 'Aplicar regras na conciliação',
+        descricao: 'Aplica as contas das regras cadastradas na tabela de conciliação',
+        icone: <RefreshCw size={12} aria-hidden="true" />,
+        palavras: ['reaplicar', 'recalcular', 'contas', 'debito', 'credito', 'automatico'],
+        destaque: true,
+        disabled: !temExtrato,
+        motivoDisabled: semExtratoMotivo,
+        onSelect: () => void handleReaplicarExtratoContas({ immediate: true }),
+      },
+      {
+        id: 'salvar-extrato',
+        label: 'Salvar extrato (autosave)',
+        descricao: 'Salva o extrato conciliado + PDF na pasta da conta banco',
+        icone: <Save size={12} aria-hidden="true" />,
+        palavras: ['gravar', 'guardar', 'pasta', 'backup'],
+        destaque: true,
+        disabled: !temExtrato,
+        motivoDisabled: semExtratoMotivo,
+        onSelect: handleSalvarExtratoNaPasta,
+      },
+      {
+        id: 'pdf-conciliado',
+        label: 'PDF conciliado',
+        descricao: 'Exporta a conciliação em PDF',
+        icone: <FileText size={12} aria-hidden="true" />,
+        palavras: ['exportar', 'imprimir', 'relatorio', 'arquivo'],
+        disabled: !temExtrato,
+        motivoDisabled: semExtratoMotivo,
+        onSelect: handleExportExtratoConciliacaoPdf,
+      },
+      {
+        id: 'imagem',
+        label: 'Imagem (PNG)',
+        descricao: 'Exporta a conciliação como imagem',
+        icone: <FileImage size={12} aria-hidden="true" />,
+        palavras: ['png', 'print', 'foto', 'captura', 'exportar'],
+        disabled: !temExtrato,
+        motivoDisabled: semExtratoMotivo,
+        onSelect: handleExportExtratoConciliacaoPng,
+      },
+      {
+        id: 'importar-balancete',
+        label: 'Importar para o balancete',
+        descricao: 'Leva os lançamentos conciliados para o balancete — por período ou tudo',
+        icone: <Upload size={12} aria-hidden="true" />,
+        palavras: ['balancete', 'lancar', 'contabilizar', 'periodo', 'enviar'],
+        disabled: !temExtrato,
+        motivoDisabled: semExtratoMotivo,
+        onSelect: () => setPeriodoModalImportBalanceteOpen(true),
+      },
+      {
+        id: 'pastas-extratos',
+        label: 'Pastas de extratos',
+        descricao: 'Extratos salvos por conta banco — selecionar puxa as regras',
+        icone: <FolderOpen size={12} aria-hidden="true" />,
+        badge: extratoPastasCount > 0 ? extratoPastasCount : undefined,
+        palavras: ['abrir', 'salvos', 'historico', 'arquivos', 'banco'],
+        onSelect: () => setExtratoPastasModalOpen(true),
+      },
+      {
+        id: 'regras-contas',
+        label: 'Regras de contas',
+        descricao: 'Regras por histórico, valor, documento e importação da folha',
+        icone: <ListOrdered size={12} aria-hidden="true" />,
+        badge: regrasContasDoBancoAtivo.length > 0 ? regrasContasDoBancoAtivo.length : undefined,
+        palavras: ['conciliacao', 'cadastro', 'contrapartida', 'folha', 'liquidos', 'cpf', 'valor'],
+        onSelect: () => setRegrasContasModalOpen(true),
+      },
+      {
+        id: 'debug-logs',
+        label: 'Debug logs',
+        descricao: 'Painel de diagnóstico — mostra o que o sistema fez com as contas',
+        icone: <span aria-hidden="true">🛠</span>,
+        badge: debugLogs.length > 0 ? debugLogs.length : undefined,
+        palavras: ['diagnostico', 'log', 'erro', 'suporte', 'tecnico'],
+        onSelect: () => setDebugPanelOpen((v) => !v),
+      },
+    ],
+    [
+      debugLogs.length,
+      extratoPastasCount,
+      handleExportExtratoConciliacaoPdf,
+      handleExportExtratoConciliacaoPng,
+      handleReaplicarExtratoContas,
+      handleSalvarExtratoNaPasta,
+      regrasContasDoBancoAtivo.length,
+      temExtrato,
+    ],
+  );
 
   // Converte data BR (DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY) ou ISO (YYYY-MM-DD)
   // para ISO comparável. Retorna '' quando não reconhece o formato — assim o
@@ -3184,90 +3291,7 @@ export default function ManagerModule({
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
-                          {extratoLancamentos.length > 0 && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void handleReaplicarExtratoContas({ immediate: true })}
-                                className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                                title="Aplica as contas das regras cadastradas na tabela de conciliação"
-                              >
-                                <RefreshCw size={11} aria-hidden="true" />
-                                APLICAR REGRAS NA CONCILIAÇÃO
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleExportExtratoConciliacaoPdf}
-                                className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                                title="Exportar conciliacao em PDF"
-                              >
-                                <FileText size={11} aria-hidden="true" />
-                                PDF CONCILIADO
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleSalvarExtratoNaPasta}
-                                className="technical-button-primary text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                                title="Salva automaticamente o extrato conciliado + PDF na pasta"
-                              >
-                                <Save size={11} aria-hidden="true" />
-                                SALVAR EXTRATO (autosave)
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setPeriodoModalImportBalanceteOpen(true)}
-                                className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                                title="Importa os lancamentos conciliados para o balancete - por periodo ou tudo"
-                              >
-                                <Upload size={11} aria-hidden="true" />
-                                IMPORTAR PARA O BALANCETE
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleExportExtratoConciliacaoPng}
-                                className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                                title="Exportar conciliacao como imagem PNG"
-                              >
-                                <FileImage size={11} aria-hidden="true" />
-                                IMAGEM
-                              </button>
-
-                            </>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setExtratoPastasModalOpen(true)}
-                            className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                            title="Pastas de extratos salvos por conta banco — selecionar puxa as regras"
-                          >
-                            <FolderOpen size={11} aria-hidden="true" />
-                            PASTAS DE EXTRATOS
-                            {extratoPastasCount > 0 ? (
-                              <span className="text-[8px] opacity-70">({extratoPastasCount})</span>
-                            ) : null}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRegrasContasModalOpen(true)}
-                            className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                            title="Regras personalizadas: descricao do extrato e conta contrapartida"
-                          >
-                            <ListOrdered size={11} aria-hidden="true" />
-                            REGRAS DE CONTAS
-                            {regrasContasDoBancoAtivo.length > 0 ? (
-                              <span className="text-[8px] opacity-70">
-                                ({regrasContasDoBancoAtivo.length})
-                              </span>
-                            ) : null}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDebugPanelOpen((v) => !v)}
-                            className="technical-button text-[9px] py-1 px-2 inline-flex items-center gap-1"
-                            title="Painel de diagnóstico — mostra o que o sistema fez com as contas"
-                          >
-                            🛠 DEBUG LOGS{debugLogs.length > 0 ? ` (${debugLogs.length})` : ''}
-                          </button>
+                          <AcoesCommandMenu itens={acoesConciliacao} label="Ações da conciliação" />
                         </div>
                       </div>
                       {extratoLancamentos.length > 0 && (
