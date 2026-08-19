@@ -312,6 +312,8 @@ interface BankStatement {
   accountDebit?: string;
   accountCredit?: string;
   operationName?: string;
+  /** Marca de origem: regra cadastrada que preencheu as contas (ver resolver). */
+  regraContaId?: string;
   status: 'CONCILIADO' | 'PENDENTE';
 }
 

@@ -276,7 +276,13 @@ export default memo(function ExtratoRegrasContasModal({
   const [draftDescricao, setDraftDescricao] = useState('');
   const [draftNature, setDraftNature] = useState<ExtratoRegraContaNature>('D');
   const [draftConta, setDraftConta] = useState('');
-  const [draftModo, setDraftModo] = useState<'historico' | 'valor'>('historico');
+  /**
+   * O formulário de nova regra não escolhe mais o critério por conta própria:
+   * ele espelha a aba aberta. Aba "manuais histórico" cadastra por histórico,
+   * aba "manuais valor" cadastra por valor, e a aba "importadas de relatório"
+   * não cadastra manualmente — só importa o PDF da folha. Assim cada pasta
+   * mostra exatamente os campos da sua própria responsabilidade.
+   */
   const [draftValor, setDraftValor] = useState('');
   const [lancamentoValorPick, setLancamentoValorPick] = useState('');
   const [folhaOpen, setFolhaOpen] = useState(false);
@@ -286,6 +292,7 @@ export default memo(function ExtratoRegrasContasModal({
    * relatório. As três nunca se misturam.
    */
   const [abaLista, setAbaLista] = useState<'historico' | 'valor' | 'importadas'>('historico');
+  const draftModo: 'historico' | 'valor' = abaLista === 'valor' ? 'valor' : 'historico';
   const [bancoSavedOk, setBancoSavedOk] = useState(false);
   const [addError, setAddError] = useState('');
   const [replicateTarget, setReplicateTarget] = useState('');
@@ -370,7 +377,6 @@ export default memo(function ExtratoRegrasContasModal({
     setDraftNature('D');
     setDraftConta('');
     setPadraoHistoricoPick('');
-    setDraftModo('historico');
     setDraftValor('');
     setLancamentoValorPick('');
     setFolhaOpen(false);
@@ -713,6 +719,19 @@ export default memo(function ExtratoRegrasContasModal({
     [company, onChange, regras, toReduzido],
   );
 
+  /**
+   * Trocar de pasta troca também o critério do formulário — logo o rascunho da
+   * regra anterior (valor/histórico/lançamento escolhido) não pode sobrar.
+   */
+  const trocarAbaLista = (aba: 'historico' | 'valor' | 'importadas') => {
+    setAbaLista(aba);
+    setSearchTerm('');
+    setDraftValor('');
+    setLancamentoValorPick('');
+    setPadraoHistoricoPick('');
+    setAddError('');
+  };
+
   const handleAdd = useCallback(() => {
     const descricao = draftDescricao.trim();
     const contraRed = toReduzido(draftConta) || sanitizeCodigoReduzido(draftConta);
@@ -930,9 +949,14 @@ export default memo(function ExtratoRegrasContasModal({
             <div className="p-3 space-y-2 shrink-0">
               <div className="flex items-center justify-between gap-2 flex-wrap">
                 <p className="text-[9px] font-black uppercase tracking-widest text-brand-text/60">
-                  Nova regra · contrapartida (código reduzido) ·{' '}
-                  {bancoLabel(selectedBanco) || 'sem banco'}
+                  {abaLista === 'importadas'
+                    ? 'Importar de relatório'
+                    : abaLista === 'valor'
+                      ? 'Nova regra por valor · contrapartida (código reduzido)'
+                      : 'Nova regra por histórico · contrapartida (código reduzido)'}{' '}
+                  · {bancoLabel(selectedBanco) || 'sem banco'}
                 </p>
+                {abaLista === 'importadas' ? (
                 <button
                   type="button"
                   onClick={() => {
@@ -946,6 +970,7 @@ export default memo(function ExtratoRegrasContasModal({
                   <Users size={11} aria-hidden="true" />
                   Importar folha (PDF)
                 </button>
+                ) : null}
               </div>
               {folhaMsg ? (
                 <p className="text-[9px] font-bold uppercase text-green-800 leading-snug">
@@ -961,47 +986,18 @@ export default memo(function ExtratoRegrasContasModal({
                   Todos os lançamentos do extrato têm regra neste banco.
                 </p>
               ) : null}
+              {abaLista === 'importadas' ? (
+                <p className="text-[8px] text-brand-text/50 leading-snug max-w-2xl">
+                  Esta pasta não cadastra regra manual: as regras vêm do Relatório de Líquidos da
+                  folha (PDF), agrupadas por funcionário. Use "Importar folha (PDF)" acima.
+                </p>
+              ) : (
               <div className="space-y-3 max-w-2xl">
-                <div className="space-y-1">
-                  <p className="text-[8px] font-bold uppercase text-brand-text/50">
-                    Como a regra identifica o lançamento
-                  </p>
-                  <div className="inline-grid grid-cols-2 border border-brand-border h-[26px] min-w-[240px]">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraftModo('historico');
-                        setAddError('');
-                      }}
-                      aria-pressed={draftModo === 'historico'}
-                      className={cn(
-                        'text-[8px] font-black uppercase px-2',
-                        draftModo === 'historico' ? 'bg-brand-text text-white' : 'bg-transparent',
-                      )}
-                    >
-                      Por histórico
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDraftModo('valor');
-                        setAddError('');
-                      }}
-                      aria-pressed={draftModo === 'valor'}
-                      className={cn(
-                        'text-[8px] font-black uppercase px-2 border-l border-brand-border',
-                        draftModo === 'valor' ? 'bg-emerald-600 text-white' : 'bg-transparent',
-                      )}
-                    >
-                      Por valor
-                    </button>
-                  </div>
-                  <p className="text-[8px] text-brand-text/50 leading-snug">
-                    {draftModo === 'valor'
-                      ? 'A regra casa pelo VALOR exato do lançamento (mais a natureza D/C). O histórico fica só como referência.'
-                      : 'A regra casa pelo TEXTO do histórico do extrato.'}
-                  </p>
-                </div>
+                <p className="text-[8px] text-brand-text/50 leading-snug">
+                  {draftModo === 'valor'
+                    ? 'A regra casa pelo VALOR exato do lançamento (mais a natureza D/C). O histórico fica só como referência.'
+                    : 'A regra casa pelo TEXTO do histórico do extrato.'}
+                </p>
 
                 {draftModo === 'valor' ? (
                   <div className="space-y-1">
@@ -1215,6 +1211,7 @@ export default memo(function ExtratoRegrasContasModal({
                   ) : null}
                 </div>
               </div>
+              )}
             </div>
 
             <div
@@ -1256,10 +1253,7 @@ export default memo(function ExtratoRegrasContasModal({
                 <button
                   type="button"
                   aria-pressed={abaLista === 'historico'}
-                  onClick={() => {
-                    setAbaLista('historico');
-                    setSearchTerm('');
-                  }}
+                  onClick={() => trocarAbaLista('historico')}
                   className={cn(
                     'flex-1 text-[8px] font-black uppercase px-2 py-1.5 inline-flex items-center justify-center gap-1',
                     abaLista === 'historico' ? 'bg-brand-text text-white' : 'bg-transparent',
@@ -1271,10 +1265,7 @@ export default memo(function ExtratoRegrasContasModal({
                 <button
                   type="button"
                   aria-pressed={abaLista === 'valor'}
-                  onClick={() => {
-                    setAbaLista('valor');
-                    setSearchTerm('');
-                  }}
+                  onClick={() => trocarAbaLista('valor')}
                   className={cn(
                     'flex-1 text-[8px] font-black uppercase px-2 py-1.5 border-l border-brand-border inline-flex items-center justify-center gap-1',
                     abaLista === 'valor' ? 'bg-emerald-600 text-white' : 'bg-transparent',
@@ -1286,10 +1277,7 @@ export default memo(function ExtratoRegrasContasModal({
                 <button
                   type="button"
                   aria-pressed={abaLista === 'importadas'}
-                  onClick={() => {
-                    setAbaLista('importadas');
-                    setSearchTerm('');
-                  }}
+                  onClick={() => trocarAbaLista('importadas')}
                   className={cn(
                     'flex-1 text-[8px] font-black uppercase px-2 py-1.5 border-l border-brand-border inline-flex items-center justify-center gap-1',
                     abaLista === 'importadas' ? 'bg-indigo-600 text-white' : 'bg-transparent',

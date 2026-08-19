@@ -931,6 +931,14 @@ export type ExtratoRowComContas = {
   accountCredit?: string;
   value?: number;
   date?: string;
+  /**
+   * Id da regra cadastrada que preencheu as contas desta linha. Serve de marca
+   * de origem: se a regra for depois excluída/editada e nenhuma outra casar,
+   * o `soAplicarRegras` sabe que pode limpar estas contas (elas nunca foram
+   * digitação manual) em vez de deixar a linha conciliada por uma regra que
+   * não existe mais.
+   */
+  regraContaId?: string;
 };
 
 export function applyExtratoContaResolver<T extends ExtratoRowComContas>(
@@ -1004,8 +1012,12 @@ export function applyExtratoContaResolver<T extends ExtratoRowComContas>(
     // palpite antigo) recebia a conta banco no lado vazio e passava a aparecer
     // como conciliada, com uma conta que ninguém escolheu. Linha incompleta
     // volta a ser resolvida normalmente e continua pendente até alguém fechar.
+    // Exceção: sob `soAplicarRegras`, linha marcada com `regraContaId` não é
+    // conciliação do usuário e sim eco de uma regra — precisa ser reavaliada
+    // (e limpa, se a regra sumiu), então não pode sair blindada por aqui.
     if (
       options?.preservarContasExistentes &&
+      !(options?.soAplicarRegras && (row.regraContaId || '').trim()) &&
       (row.accountDebit || '').trim() &&
       (row.accountCredit || '').trim()
     ) {
@@ -1054,12 +1066,35 @@ export function applyExtratoContaResolver<T extends ExtratoRowComContas>(
         accountCode: '',
         accountDebit: deb,
         accountCredit: cred,
+        regraContaId: resolved.regraContaId,
       };
     }
 
-    // Sem regra: se soAplicarRegras, devolve a linha intacta (não toca contas manuais).
+    // Sem regra: se soAplicarRegras, devolve a linha intacta (não toca contas
+    // manuais) — salvo quando a linha carrega `regraContaId`, ou seja, foi o
+    // próprio resolver que preencheu essas contas a partir de uma regra que
+    // agora não existe mais (excluída ou editada no modal de regras). Nesse
+    // caso a linha volta ao estado "só banco", pendente, em vez de continuar
+    // exibindo a contrapartida de uma regra apagada.
     if (options?.soAplicarRegras) {
-      return row;
+      const marcaRegra = (row.regraContaId || '').trim();
+      if (!marcaRegra) return row;
+      // A regra também tinha alimentado o cache de significados; sem isso a
+      // conta apagada voltaria na próxima resolução automática.
+      if (resolved.significado && nextCache[resolved.significado]) {
+        const { [resolved.significado]: _removido, ...restoCache } = nextCache;
+        nextCache = restoCache;
+      }
+      const par = bancoCanon
+        ? buildExtratoParSoBanco(row.nature, bancoCanon)
+        : { contaDebito: '', contaCredito: '' };
+      return {
+        ...row,
+        accountCode: '',
+        accountDebit: par.contaDebito,
+        accountCredit: par.contaCredito,
+        regraContaId: undefined,
+      };
     }
 
     // Sem regra: preserva digitação manual existente se for válida e diferente do banco.
