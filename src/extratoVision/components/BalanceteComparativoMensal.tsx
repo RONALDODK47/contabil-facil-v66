@@ -12,6 +12,7 @@ import { Maximize2, Minimize2 } from 'lucide-react';
 import type { VisionBalanceteRow, VisionPlanoRow } from '../types/accounting';
 import {
   buildPeriodosMensaisEntreDatas,
+  celulaMensalInvertida,
   filtrarPeriodosComMovimentoNasLinhas,
   montarComparativoMensalAsync,
   type LinhaComparativoMensal,
@@ -349,7 +350,16 @@ function ResultadoAutomatizacaoCompacto({ resultado }: { resultado: ResultadoAut
   );
 }
 
-function CelulaSaldoMes({ cel, contabil }: { cel: SaldoMensalCelula | null | undefined; contabil?: boolean }) {
+function CelulaSaldoMes({
+  cel,
+  contabil,
+  invertida: invertidaProp,
+}: {
+  cel: SaldoMensalCelula | null | undefined;
+  contabil?: boolean;
+  /** Veredito da linha (celulaMensalInvertida) — mantém célula e linha no MESMO critério. */
+  invertida?: boolean;
+}) {
   if (!cel) {
     return <span className={contabil ? 'text-slate-400' : 'text-slate-500'}>—</span>;
   }
@@ -361,7 +371,7 @@ function CelulaSaldoMes({ cel, contabil }: { cel: SaldoMensalCelula | null | und
     );
   }
   const valorFmt = cel.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const invertida = cel.invertido === true;
+  const invertida = invertidaProp ?? cel.invertido === true;
   const natClass = invertida
     ? contabil
       ? 'text-red-900 bg-red-200 px-0.5'
@@ -423,6 +433,13 @@ const ComparativoLinha = memo(function ComparativoLinha({
 }) {
   const natEsp = linha.naturezaCodigo ?? 'D';
   const natLabel = linha.naturezaLabel ?? 'Conta';
+  // Conta sem lado definido (resultado do exercício, L/P acumulados, AEA): o motor
+  // nunca a acusa de invertida, então anunciar "D Devedora" no selo era enganoso —
+  // o modal do Razão já mostra "Ambígua" para as mesmas contas.
+  const naturezaIndefinida = isContaNaturezaAmbigua({
+    nome: linha.nome,
+    classificacao: linha.classificacao,
+  });
 
   // Nível hierárquico: número de segmentos na classificação (ex: "2.1.5" = 3)
   const nivelCls = (linha.classificacao || '').split('.').filter(Boolean).length || 1;
@@ -454,12 +471,12 @@ const ComparativoLinha = memo(function ComparativoLinha({
         ? '!font-bold'
         : '!font-normal';
 
-  // Usa só cel.invertido (já calculado por detectarInversao, que trata sintéticas,
-  // dedutoras "(-)", redutoras de PL e contas de natureza ambígua). Comparar
-  // cel.natureza !== natEsp direto aqui ignorava essas exceções e sinalizava
-  // sintéticas e contas corretas como "invertida" por engano.
+  // Regra única de "célula invertida" (ver celulaMensalInvertida): respeita as
+  // exceções do motor contábil — resultado, natureza ambígua e redutoras do PL
+  // não são acusadas de inversão — e mantém o destaque nas sintéticas
+  // patrimoniais, que o motor não avalia.
   const celulaInvertida = (cel: SaldoMensalCelula | null | undefined) =>
-    !!(cel && cel.valor >= 0.01 && cel.invertido === true);
+    celulaMensalInvertida(cel, linha);
 
   const invertidoPeriodo = periodos.some((p) => celulaInvertida(linha.saldosPorMes[p.label]));
   // Quando filtro de "dias invertidos" está ativo, força cor vermelha mesmo sem inversão no saldo final
@@ -596,7 +613,11 @@ const ComparativoLinha = memo(function ComparativoLinha({
                 : ''
                 }`}
             >
-              <CelulaSaldoMes cel={linha.saldosPorMes[p.label]} contabil={contabil} />
+              <CelulaSaldoMes
+                cel={linha.saldosPorMes[p.label]}
+                contabil={contabil}
+                invertida={celulaInvertida(linha.saldosPorMes[p.label])}
+              />
             </td>
           </React.Fragment>
         );
@@ -612,10 +633,20 @@ const ComparativoLinha = memo(function ComparativoLinha({
                 : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
               }`
           }
-          title={`Natureza da conta: ${natLabel} (CPC)`}
+          title={
+            naturezaIndefinida
+              ? 'Conta de natureza ambígua (resultado do exercício, lucros/prejuízos acumulados, AEA): pode fechar devedora ou credora, e por isso nunca é acusada de invertida.'
+              : `Natureza da conta: ${natLabel} (CPC)`
+          }
         >
-          {natEsp}
-          <span className="font-normal opacity-90">{natLabel}</span>
+          {naturezaIndefinida ? (
+            <span className="font-normal opacity-70">Ambígua</span>
+          ) : (
+            <>
+              {natEsp}
+              <span className="font-normal opacity-90">{natLabel}</span>
+            </>
+          )}
         </span>
       </td>
     </tr>
@@ -1072,11 +1103,13 @@ function ComparativoMensalInner({
 
     // Filtro: CONTAS SALDO MÊS INVERTIDO (saldo final do mês está invertido)
     if (filtroSomenteInvertidas) {
+      // MESMA regra que pinta a linha de vermelho (celulaMensalInvertida). Antes o
+      // filtro olhava só `cel.invertido`, que o motor nunca marca em conta
+      // SINTÉTICA — então grupos patrimoniais fechando do lado errado apareciam
+      // vermelhos na lista completa e sumiam ao ligar o filtro: "não mostra todas
+      // as invertidas".
       resultado = resultado.filter((linha) =>
-        periodosSelecionados.some((p) => {
-          const cel = linha.saldosPorMes[p.label];
-          return cel && cel.valor >= 0.01 && cel.invertido === true;
-        }),
+        periodosSelecionados.some((p) => celulaMensalInvertida(linha.saldosPorMes[p.label], linha)),
       );
     }
 
@@ -1093,10 +1126,9 @@ function ComparativoMensalInner({
         // varria TODOS os meses da linha e aceitava célula invertida de saldo ~0:
         // conta nessa situação era descartada aqui e também não aparecia no outro
         // filtro (que exige valor >= 0,01), sumindo das duas visões.
-        const fechouMesInvertido = periodosSelecionados.some((p) => {
-          const cel = linha.saldosPorMes[p.label];
-          return cel && cel.valor >= 0.01 && cel.invertido === true;
-        });
+        const fechouMesInvertido = periodosSelecionados.some((p) =>
+          celulaMensalInvertida(linha.saldosPorMes[p.label], linha),
+        );
         if (fechouMesInvertido) return false;
 
         // Mesma regra que pinta os lançamentos causa-raiz de vermelho no Razão:

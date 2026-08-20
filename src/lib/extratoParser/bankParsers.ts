@@ -1,6 +1,120 @@
 import { ExtratoLine, BankStatementMetadata } from './types';
 import type { PdfWord } from './pdfExtractor';
 
+// ─── Posicionamento tolerante (comum a todos os parsers por coordenada) ────
+// Regra geral destes parsers: variação pequena dentro do mesmo layout (linha
+// mais alta porque o histórico quebrou, coluna deslocada alguns pontos,
+// baseline com jitter de frações de ponto, data com ou sem hora) NUNCA pode
+// fazer um lançamento ser descartado. As funções abaixo concentram essa
+// tolerância, para que nenhum parser precise de constantes de altura de linha
+// calibradas PDF a PDF.
+
+/** Data DD/MM/AAAA, opcionalmente seguida da hora (colada ou com traço). */
+const DATA_COM_HORA_OPCIONAL_RE =
+  /^(\d{2}\/\d{2}\/\d{4})(?:\s*-?\s*\d{2}:\d{2}(?::\d{2})?)?$/;
+
+/** Hora isolada em item próprio, com ou sem os segundos. */
+const HORA_ISOLADA_RE = /^-?\s*\d{2}:\d{2}(?::\d{2})?$/;
+
+/**
+ * Extrai só a data (DD/MM/AAAA) de um item que pode trazer a hora junto.
+ * Devolve null se o item não começar por uma data.
+ */
+function soData(raw: string): string | null {
+  const m = DATA_COM_HORA_OPCIONAL_RE.exec(raw.trim());
+  return m ? m[1] : null;
+}
+
+/**
+ * Agrupa as palavras da página em FAIXAS verticais, uma por âncora (em geral
+ * a data do lançamento). Cada faixa vai do meio do caminho até a âncora de
+ * cima ao meio do caminho até a de baixo, de modo que acompanha a altura real
+ * da linha: um lançamento de uma linha e outro de quatro linhas são lidos do
+ * mesmo jeito, sem tolerância fixa para calibrar.
+ *
+ * `maxY` corta tudo acima do cabeçalho da tabela (quando a página tem um).
+ */
+function bandWordsByAnchors<A extends { y0: number }>(
+  words: PdfWord[],
+  anchors: A[],
+  opts: { defaultPitch?: number; maxY?: number } = {}
+): Array<{ anchor: A; words: PdfWord[] }> {
+  if (anchors.length === 0) return [];
+
+  const ordered = [...anchors].sort((a, b) => b.y0 - a.y0); // topo → rodapé
+  const maxY = opts.maxY ?? Infinity;
+
+  // Espaçamento típico entre lançamentos na página (mediana), usado só para
+  // dar meia-linha de folga acima do primeiro e abaixo do último.
+  const gaps: number[] = [];
+  for (let i = 1; i < ordered.length; i++) gaps.push(ordered[i - 1].y0 - ordered[i].y0);
+  gaps.sort((a, b) => a - b);
+  const pitch = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : (opts.defaultPitch ?? 20);
+
+  const top: number[] = [];
+  const bottom: number[] = [];
+  for (let i = 0; i < ordered.length; i++) {
+    top[i] = i === 0 ? ordered[0].y0 + pitch / 2 : (ordered[i - 1].y0 + ordered[i].y0) / 2;
+    bottom[i] =
+      i === ordered.length - 1
+        ? ordered[i].y0 - pitch / 2
+        : (ordered[i].y0 + ordered[i + 1].y0) / 2;
+  }
+
+  const result = ordered.map((anchor) => ({ anchor, words: [] as PdfWord[] }));
+  for (const w of words) {
+    if (w.y0 > maxY) continue;
+    for (let i = 0; i < ordered.length; i++) {
+      if (w.y0 <= top[i] && w.y0 > bottom[i]) {
+        result[i].words.push(w);
+        break;
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Ordena as palavras de um lançamento em ordem de leitura: linha de cima
+ * primeiro, e dentro da mesma linha visual da esquerda para a direita. O
+ * agrupamento por proximidade (e não por Y exato) evita inverter palavras da
+ * mesma linha quando o baseline varia por frações de ponto.
+ */
+function sortWordsReadingOrder(words: PdfWord[], sameLineGap = 3): PdfWord[] {
+  return [...words].sort((a, b) =>
+    Math.abs(a.y0 - b.y0) > sameLineGap ? b.y0 - a.y0 : a.x0 - b.x0
+  );
+}
+
+/**
+ * Agrupa as palavras em linhas visuais por proximidade em Y, em vez de
+ * arredondar o Y para uma grade fixa. Arredondar quebra a linha em duas
+ * quando duas palavras caem em lados opostos da fronteira do "balde"
+ * (ex.: y=100,9 e y=101,1); agrupar por distância não tem essa fronteira.
+ */
+function clusterWordsIntoRows(words: PdfWord[], maxGap = 3): PdfWord[][] {
+  const sorted = [...words].sort((a, b) => b.y0 - a.y0);
+  const rows: PdfWord[][] = [];
+  let current: PdfWord[] = [];
+  let refY = Infinity;
+
+  for (const w of sorted) {
+    if (current.length === 0) {
+      current.push(w);
+      refY = w.y0;
+    } else if (Math.abs(refY - w.y0) <= maxGap) {
+      current.push(w);
+    } else {
+      rows.push(current);
+      current = [w];
+      refY = w.y0;
+    }
+  }
+  if (current.length > 0) rows.push(current);
+
+  return rows.map((row) => [...row].sort((a, b) => a.x0 - b.x0));
+}
+
 const DATE_TOKEN_RE = /\b(\d{2})\/(\d{2})\/(\d{4})\b/g;
 const MONEY_RE = /-?\d{1,3}(?:\.\d{3})*,\d{2}/;
 const CNPJ_RE = /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/g;
@@ -389,14 +503,28 @@ export function parseSicrediWords(pages: PdfWord[][]): {
 // não em ordem de leitura por linha — por isso um parser de texto puro
 // embaralharia os lançamentos. Cada lançamento tem sua própria palavra de
 // data (mesmo quando duas linhas — ex.: "TAR PIX" e "DEB PIX CHAVE" —
-// compartilham o mesmo horário), então usamos essa palavra como âncora e
-// atribuímos a ela todas as palavras próximas por posição Y (com folga p/
-// cima, já que Favorecido/Saldo às vezes aparecem em uma linha ligeiramente
-// acima da data dentro do mesmo lançamento).
+// compartilham o mesmo horário), então usamos essa palavra como âncora.
+//
+// O mesmo layout aparece com variações pequenas de PDF para PDF (data com ou
+// sem hora, hora colada ou em item separado, histórico em uma ou várias
+// linhas, colunas deslocadas alguns pontos). Nenhuma dessas variações pode
+// impedir a extração, então em vez de exigir posições exatas o parser
+// trabalha por FAIXA: cada âncora fica com toda a faixa vertical que vai até
+// a metade do caminho para a âncora vizinha — assim um lançamento com 1 ou
+// com 4 linhas de histórico é lido do mesmo jeito — e as colunas são
+// contíguas (sem vãos onde uma palavra deslocada se perderia).
 
-const CAIXA_DATE_RE = /^(\d{2}\/\d{2}\/\d{4})-?$/;
-const CAIXA_TIME_RE = /^\d{2}:\d{2}:\d{2}$/;
-const CAIXA_DOC_RE = /^\d{6}$/;
+// Aceita a data isolada ("31/07/2026"), com o traço separador ("31/07/2026-")
+// e também data+hora coladas num único item de texto ("31/07/2026-19:54:54"),
+// formato entregue pelo pdf.js em parte dos extratos da Caixa — sem isso a
+// âncora do lançamento não era reconhecida e a linha inteira era descartada.
+const CAIXA_DATE_RE = /^(\d{2}\/\d{2}\/\d{4})(?:\s*-\s*(?:\d{2}:\d{2}(?::\d{2})?)?)?$/;
+// Hora isolada em item próprio — com ou sem os segundos.
+const CAIXA_TIME_RE = /^-?\s*\d{2}:\d{2}(?::\d{2})?$/;
+// Nr. Doc: só precisa ser numérico dentro da coluna de documento; o
+// tamanho varia entre versões do extrato (6 dígitos, com zeros à
+// esquerda, às vezes mais).
+const CAIXA_DOC_RE = /^\d{3,12}$/;
 const CAIXA_MONEY_RE = /^(?:R?\$)?(\d{1,3}(?:\.\d{3})*,\d{2})([CD])?$/i;
 // Fallback para linhas raras onde o próprio PDF da Caixa erra o separador
 // decimal (ex.: "30.512.46" ou "783.81" em vez de "30.512,46"/"783,81") —
@@ -407,17 +535,17 @@ const CAIXA_CPF_CNPJ_RE = /^\*{2,3}[\d.,/]+\*{2,3}$/;
 
 const CAIXA_COL_DATE = [30, 50] as const;
 const CAIXA_COL_DOC = [115, 140] as const;
-const CAIXA_COL_HISTORICO = [150, 305] as const;
 const CAIXA_COL_FAVORECIDO = [305, 400] as const;
 const CAIXA_VALOR_SALDO_SPLIT_X = 465; // < isso = coluna Valor, >= isso = coluna Saldo
-// Cada lançamento se espalha por no máx. ~2pt acima/abaixo da linha da data
-// (jitter de baseline entre sub-linhas do mesmo lançamento). Cabeçalho/rodapé
-// ficam a dezenas de pontos de distância, então essa tolerância também os
-// exclui automaticamente sem precisar de uma lista negra de textos.
-const CAIXA_BLOCK_TOLERANCE = 4;
+// Altura de linha assumida quando a página tem uma única âncora e não dá para
+// medir o espaçamento real entre lançamentos.
+const CAIXA_DEFAULT_ROW_PITCH = 22;
 const CAIXA_HEADER_WORDS = new Set([
   'lançamentos', 'nr.', 'doc', 'histórico/complemento', 'favorecido', 'cpf/cnpj', 'valor',
 ]);
+// Palavras que identificam a linha de cabeçalho da tabela; tudo acima dela
+// (título, dados do cliente, "SALDO ANTERIOR") nunca pertence a lançamento.
+const CAIXA_HEADER_MARKERS = ['histórico/complemento', 'lançamentos', 'cpf/cnpj'];
 
 function caixaInRange(x: number, [min, max]: readonly [number, number]): boolean {
   return x >= min && x < max;
@@ -469,33 +597,63 @@ export function parseCaixaWords(pages: PdfWord[][]): {
   const transactions: ExtratoLine[] = [];
 
   for (const words of pages) {
+    // Linha de cabeçalho da tabela: nada acima dela entra em lançamento.
+    // Páginas de continuação não repetem o cabeçalho — nesse caso não há
+    // corte algum (Infinity), a página inteira continua valendo.
+    const headerYs = words
+      .filter((w) => CAIXA_HEADER_MARKERS.includes(w.str.trim().toLowerCase()))
+      .map((w) => w.y0);
+    const headerY = headerYs.length > 0 ? Math.max(...headerYs) : Infinity;
+
     type Anchor = { y0: number; date: string };
     const anchors: Anchor[] = [];
     for (const w of words) {
       if (!caixaInRange(w.x0, CAIXA_COL_DATE)) continue;
+      if (w.y0 > headerY - 2) continue;
       const m = CAIXA_DATE_RE.exec(w.str.trim());
       if (m) anchors.push({ y0: w.y0, date: m[1] });
     }
     if (anchors.length === 0) continue;
 
-    // Atribui cada palavra à âncora (data) mais próxima em Y, dentro de uma
-    // tolerância pequena. Palavras fora desse raio (cabeçalho, rodapé,
-    // "SALDO ANTERIOR") ficam sem bloco e são ignoradas.
+    anchors.sort((a, b) => b.y0 - a.y0);
+
+    // Espaçamento típico entre lançamentos nesta página (mediana das
+    // distâncias entre âncoras consecutivas). Serve só para dar meia-linha de
+    // folga acima do primeiro e abaixo do último lançamento.
+    const gaps: number[] = [];
+    for (let i = 1; i < anchors.length; i++) gaps.push(anchors[i - 1].y0 - anchors[i].y0);
+    gaps.sort((a, b) => a - b);
+    const pitch = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : CAIXA_DEFAULT_ROW_PITCH;
+
+    // Faixa vertical de cada lançamento: do meio do caminho até a âncora de
+    // cima ao meio do caminho até a de baixo. É isso que faz histórico de
+    // uma linha e de várias linhas serem lidos da mesma forma — a faixa
+    // acompanha a altura real da linha, seja ela qual for.
+    const bandTop: number[] = [];
+    const bandBottom: number[] = [];
+    for (let i = 0; i < anchors.length; i++) {
+      bandTop[i] =
+        i === 0 ? anchors[0].y0 + pitch / 2 : (anchors[i - 1].y0 + anchors[i].y0) / 2;
+      bandBottom[i] =
+        i === anchors.length - 1
+          ? anchors[i].y0 - pitch / 2
+          : (anchors[i].y0 + anchors[i + 1].y0) / 2;
+    }
+
     const blocks = new Map<number, PdfWord[]>();
     for (const w of words) {
-      let bestIdx = -1;
-      let bestDist = Infinity;
+      if (w.y0 > headerY - 2) continue;
+      let idx = -1;
       for (let i = 0; i < anchors.length; i++) {
-        const dist = Math.abs(w.y0 - anchors[i].y0);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestIdx = i;
+        if (w.y0 <= bandTop[i] && w.y0 > bandBottom[i]) {
+          idx = i;
+          break;
         }
       }
-      if (bestIdx === -1 || bestDist > CAIXA_BLOCK_TOLERANCE) continue;
-      const arr = blocks.get(bestIdx) ?? [];
+      if (idx === -1) continue;
+      const arr = blocks.get(idx) ?? [];
       arr.push(w);
-      blocks.set(bestIdx, arr);
+      blocks.set(idx, arr);
     }
 
     for (const [idx, blockWords] of blocks) {
@@ -563,8 +721,12 @@ export function parseCaixaWords(pages: PdfWord[][]): {
 
         if (CAIXA_HEADER_WORDS.has(str.toLowerCase())) continue;
 
-        if (caixaInRange(w.x0, CAIXA_COL_HISTORICO)) historicoWords.push(str);
-        else if (caixaInRange(w.x0, CAIXA_COL_FAVORECIDO)) favorecidoWords.push(str);
+        // Colunas contíguas: qualquer palavra à esquerda da coluna de valor
+        // cai em histórico ou favorecido, nunca é descartada por estar alguns
+        // pontos fora da faixa nominal da coluna.
+        if (w.x0 < CAIXA_COL_DOC[0]) continue; // sobra da coluna de data/hora
+        else if (w.x0 < CAIXA_COL_FAVORECIDO[0]) historicoWords.push(str);
+        else if (w.x0 < CAIXA_VALOR_SALDO_SPLIT_X) favorecidoWords.push(str);
       }
 
       const historico = historicoWords.join(' ').replace(/\s+/g, ' ').trim();

@@ -23,6 +23,7 @@ import {
   type InfinitePayJSONInput,
 } from './bankParsers';
 import type { BankCode } from './bankFormats';
+import type { PdfWord } from './pdfExtractor';
 
 function parseByBank(
   pdfText: string,
@@ -64,7 +65,8 @@ function parseByBank(
 function finalizeStatement(
   rawTransactions: ExtratoLine[],
   metadata: BankStatementMetadata | null,
-  overrideMetadata?: Partial<BankStatementMetadata>
+  overrideMetadata?: Partial<BankStatementMetadata>,
+  warnings?: string[]
 ): BankStatementJSON {
   const transactions = rawTransactions
     .filter((line) => line.date && line.description && line.amount !== undefined)
@@ -97,6 +99,7 @@ function finalizeStatement(
   return {
     transactions,
     metadata: finalMetadata,
+    ...(warnings && warnings.length > 0 ? { warnings } : {}),
   };
 }
 
@@ -126,6 +129,29 @@ export async function convertJSONFileToStatement(
   throw new Error('JSON parsing is only supported for InfinitePay format');
 }
 
+/**
+ * Lê as palavras com posição X/Y e transforma páginas escaneadas (sem camada
+ * de texto) em AVISO, nunca em erro: os lançamentos das páginas legíveis são
+ * entregues normalmente.
+ */
+async function wordsWithWarnings(file: File): Promise<{
+  pages: PdfWord[][];
+  warnings: string[];
+}> {
+  const { extractWordsFromPDFFileWithDiagnostics } = await import('./pdfExtractor');
+  const { pages, scannedPages, numPages } = await extractWordsFromPDFFileWithDiagnostics(file);
+  const warnings =
+    scannedPages.length > 0
+      ? [
+          `${scannedPages.length} de ${numPages} página(s) deste PDF são imagem escaneada, ` +
+            `sem texto selecionável (página(s) ${scannedPages.join(', ')}). Os lançamentos ` +
+            'dessas páginas não entraram na conversão — use a leitura por IA/OCR ou gere o ' +
+            'extrato em PDF original para incluí-los.',
+        ]
+      : [];
+  return { pages, warnings };
+}
+
 export async function convertPDFFileToJSON(
   file: File,
   overrideMetadata?: Partial<BankStatementMetadata>,
@@ -142,17 +168,15 @@ export async function convertPDFFileToJSON(
       return finalizeStatement(transactions, metadata, overrideMetadata);
     }
     // Default: extração por palavras com coordenadas X/Y
-    const { extractWordsFromPDFFile } = await import('./pdfExtractor');
-    const pages = await extractWordsFromPDFFile(file);
+    const { pages, warnings } = await wordsWithWarnings(file);
     const { transactions, metadata } = parseSicrediWords(pages);
-    return finalizeStatement(transactions, metadata, overrideMetadata);
+    return finalizeStatement(transactions, metadata, overrideMetadata, warnings);
   }
 
   if (bankCode === 'BRADESCO') {
-    const { extractWordsFromPDFFile } = await import('./pdfExtractor');
-    const pages = await extractWordsFromPDFFile(file);
+    const { pages, warnings } = await wordsWithWarnings(file);
     const { transactions, metadata } = parseBradescoWords(pages);
-    return finalizeStatement(transactions, metadata, overrideMetadata);
+    return finalizeStatement(transactions, metadata, overrideMetadata, warnings);
   }
 
   // Caixa: o pdf.js entrega as palavras da tabela em ordem de coluna (todo o
@@ -160,25 +184,23 @@ export async function convertPDFFileToJSON(
   // não em ordem de leitura por linha — precisa da posição X/Y para remontar
   // cada lançamento corretamente.
   if (bankCode === 'CAIXA') {
-    const { extractWordsFromPDFFile } = await import('./pdfExtractor');
-    const pages = await extractWordsFromPDFFile(file);
+    const { pages, warnings } = await wordsWithWarnings(file);
     const { transactions, metadata } =
       layoutId === 'caixa_app_periodo'
         ? parseCaixaAppWords(pages)
         : layoutId === 'caixa_gerenciador_periodo'
           ? parseCaixaGerenciadorWords(pages)
           : parseCaixaWords(pages);
-    return finalizeStatement(transactions, metadata, overrideMetadata);
+    return finalizeStatement(transactions, metadata, overrideMetadata, warnings);
   }
 
   // Cresol: o histórico quebra em duas linhas e a data de cada lançamento fica
   // numa coluna própria, separada do cabeçalho do dia — só a posição X/Y
   // permite juntar data + histórico + valor do mesmo lançamento.
   if (bankCode === 'CRESOL') {
-    const { extractWordsFromPDFFile } = await import('./pdfExtractor');
-    const pages = await extractWordsFromPDFFile(file);
+    const { pages, warnings } = await wordsWithWarnings(file);
     const { transactions, metadata } = parseCresolWords(pages);
-    return finalizeStatement(transactions, metadata, overrideMetadata);
+    return finalizeStatement(transactions, metadata, overrideMetadata, warnings);
   }
 
   // Santander: alguns PDFs entregam o texto do pdf.js fora da ordem visual
@@ -186,10 +208,9 @@ export async function convertPDFFileToJSON(
   // posição X/Y reconstrói a linha corretamente independente da ordem em
   // que o PDF desenhou o texto.
   if (bankCode === 'SANTANDER') {
-    const { extractWordsFromPDFFile } = await import('./pdfExtractor');
-    const pages = await extractWordsFromPDFFile(file);
+    const { pages, warnings } = await wordsWithWarnings(file);
     const { transactions, metadata } = parseSantanderWords(pages);
-    return finalizeStatement(transactions, metadata, overrideMetadata);
+    return finalizeStatement(transactions, metadata, overrideMetadata, warnings);
   }
 
   // Import dynamically to avoid issues in browser/server environments

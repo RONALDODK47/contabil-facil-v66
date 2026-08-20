@@ -1,11 +1,5 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { AuditoriaBalanceteResumo } from './auditoriaBalanceteContinua';
-import {
-  agruparAchadosAuditoriaPorTipo,
-  formatContasAgrupadasPdf,
-  fundamentacaoNormativaAgrupadaPdf,
-} from './auditoriaAchadosAgrupados';
 import type { LinhaComparativoMensal, PeriodoMensal, SaldoMensalCelula } from './balanceteComparativoMensal';
 
 const MARGEM = 32;
@@ -46,12 +40,6 @@ function linhaTemMovimento(linha: LinhaComparativoMensal, periodos: PeriodoMensa
 function linhaTemInversao(linha: LinhaComparativoMensal, periodos: PeriodoMensal[]): boolean {
   const nat = linha.naturezaCodigo ?? 'D';
   return periodos.some((p) => celulaInvertida(linha.saldosPorMes[p.label], nat));
-}
-
-function severidadePdfLabel(sev: 'critico' | 'alerta' | 'info'): string {
-  if (sev === 'critico') return 'CRITICO';
-  if (sev === 'alerta') return 'ALERTA';
-  return 'INFO';
 }
 
 function blocosMeses(periodos: PeriodoMensal[]): PeriodoMensal[][] {
@@ -178,16 +166,16 @@ function desenharTabelaComparativo(
   return (doc as { lastAutoTable?: { finalY: number } }).lastAutoTable!.finalY + 14;
 }
 
-/** PDF legível do comparativo mensal + auditoria RF/CPC. */
+/** PDF legível do comparativo mensal. */
 export function exportBalanceteComparativoPdf(params: {
   linhas: LinhaComparativoMensal[];
   periodos: PeriodoMensal[];
   empresa?: string;
   periodoDe?: string;
   periodoAte?: string;
-  auditoria?: AuditoriaBalanceteResumo | null;
+  auditoria?: unknown;
 }): void {
-  const { linhas, periodos, empresa, periodoDe, periodoAte, auditoria } = params;
+  const { linhas, periodos, empresa, periodoDe, periodoAte } = params;
   const now = new Date();
   const generatedAt = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
@@ -233,65 +221,6 @@ export function exportBalanceteComparativoPdf(params: {
     y,
   );
   y += 16;
-
-  if (auditoria && auditoria.total > 0) {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.setTextColor(153, 27, 27);
-    doc.text(
-      pdfText(
-        `Auditoria RF + CPC: ${auditoria.criticos} critico(s), ${auditoria.alertas} alerta(s) · score ${auditoria.score}`,
-      ),
-      MARGEM,
-      y,
-    );
-    doc.setTextColor(0, 0, 0);
-    y += 10;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(80, 80, 80);
-    const grupos = agruparAchadosAuditoriaPorTipo(auditoria.achados);
-    doc.text(
-      pdfText(
-        `${grupos.length} tipo(s) de problema · ${auditoria.total} ocorrencia(s) em contas · fundamentacao CPC/RF uma vez por tipo.`,
-      ),
-      MARGEM,
-      y,
-    );
-    doc.setTextColor(0, 0, 0);
-    y += 10;
-
-    const tableW = pageW - MARGEM * 2;
-    const colGrav = 42;
-    const colProblema = 118;
-    const colFund = tableW - colGrav - colProblema;
-
-    autoTable(doc, {
-      startY: y,
-      head: [['Grav.', 'Problema e contas afetadas', 'Fundamentacao normativa (por que + paragrafo + trecho)']],
-      body: grupos.map((g) => [
-        severidadePdfLabel(g.severidade),
-        pdfText(`PROBLEMA: ${g.titulo}\n\n${formatContasAgrupadasPdf(g.contas)}`),
-        pdfText(fundamentacaoNormativaAgrupadaPdf(g)),
-      ]),
-      styles: {
-        fontSize: 6.5,
-        cellPadding: 3,
-        overflow: 'linebreak',
-        valign: 'top',
-      },
-      headStyles: { fillColor: [153, 27, 27], fontSize: 7, valign: 'middle' },
-      columnStyles: {
-        0: { cellWidth: colGrav, fontStyle: 'bold' },
-        1: { cellWidth: colProblema },
-        2: { cellWidth: colFund },
-      },
-      margin: { left: MARGEM, right: MARGEM },
-      tableWidth: tableW,
-    });
-    y = (doc as { lastAutoTable?: { finalY: number } }).lastAutoTable!.finalY + 18;
-  }
 
   const blocos = blocosMeses(periodos);
   blocos.forEach((periodosBloco, idx) => {

@@ -4,6 +4,7 @@ import {
   analisarSaldoContabil,
   enrichNaturezaSaldoImportado,
   formatNaturezaConta,
+  isContaNaturezaAmbigua,
   isContaPassivoPorNome,
 } from './naturezaContabil';
 import {
@@ -52,6 +53,42 @@ export type LinhaComparativoMensal = {
   naturezaCodigo?: 'D' | 'C';
   naturezaLabel?: string;
 };
+
+/**
+ * Uma célula mensal deve aparecer VERMELHA (natureza invertida) no Balancete?
+ *
+ * A decisão canônica é `cel.invertido`, produzida por `analisarSaldoContabil` —
+ * que de propósito NÃO acusa inversão em contas de resultado (grupos 3-7), de
+ * natureza ambígua (Lucros/Prejuízos Acumulados, Resultado do Exercício) e
+ * redutoras do PL, onde saldo do lado oposto é legítimo.
+ *
+ * A tela comparava também `cel.natureza !== naturezaEsperada`, o que atropelava
+ * todas essas exceções: uma receita com mês devedor (devolução/estorno) e uma
+ * conta ambígua com saldo devedor saíam vermelhas e com o selo "Invertida",
+ * embora o motor tivesse decidido que não há inversão — e, incoerentemente, não
+ * apareciam ao ligar o filtro "Contas saldo mês invertido", que sempre usou só
+ * `cel.invertido`.
+ *
+ * O `!==` só continua valendo onde o motor se abstém por construção: contas
+ * SINTÉTICAS (`detectarInversao` devolve false para tipo 'S'), e ainda assim
+ * apenas nos grupos patrimoniais (1 Ativo / 2 Passivo+PL) e fora das ambíguas —
+ * senão o grupo "3 RECEITAS" reintroduziria o mesmo falso positivo.
+ */
+export function celulaMensalInvertida(
+  cel: SaldoMensalCelula | null | undefined,
+  linha: Pick<LinhaComparativoMensal, 'codigo' | 'classificacao' | 'nome' | 'tipo' | 'naturezaCodigo'>,
+): boolean {
+  if (!cel || cel.valor < 0.01) return false;
+  if (cel.invertido === true) return true;
+  if (linha.tipo !== 'S') return false;
+
+  const raiz = (linha.classificacao || linha.codigo || '').trim().charAt(0);
+  if (raiz !== '1' && raiz !== '2') return false;
+  if (isContaNaturezaAmbigua({ nome: linha.nome, classificacao: linha.classificacao })) return false;
+
+  const natEsp = linha.naturezaCodigo;
+  return !!natEsp && cel.natureza !== natEsp;
+}
 
 /**
  * Conta presente em algum balancete mensal do período. Presença basta — uma conta

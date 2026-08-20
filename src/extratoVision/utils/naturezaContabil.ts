@@ -207,7 +207,13 @@ export function isContaNaturezaAmbigua(row: Pick<VisionBalanceteRow, 'nome' | 'c
     /\baea\b/i.test(n) ||
     /lucros?\s+acumulados?/i.test(n) ||
     /prejuízo[s]?\s+acumulados?|prejuizo[s]?\s+acumulados?/i.test(n) ||
-    /\bsuperávit|\bsuperavit|\bdeficit|\bdéficit/i.test(n)
+    // Superávit/déficit: ambíguo SÓ quando a MESMA conta acumula os dois lados
+    // (ex.: "SUPERÁVIT/DÉFICIT DO EXERCÍCIO"). Plano que separa as duas contas
+    // — "SUPERÁVITS DO EXERCÍCIO" e "(-) DÉFICITS DO EXERCÍCIO" — dá a cada uma
+    // um lado definido: superávit é credor, déficit é devedor (retificadora).
+    // Tratar as duas como ambíguas escondia inversão real: superávit fechando a
+    // débito nunca era acusado.
+    (/\bsuper[áa]vit/i.test(n) && /\bd[ée]ficit/i.test(n))
   );
 }
 
@@ -318,6 +324,19 @@ export function isContaRedutoraPL(
   const rows = ensureRows(allRows);
   const n = nomeNorm(row);
   const fullRow = row as VisionBalanceteRow;
+
+  // REGRA REFORÇADA — o sinal "(-)" manda: uma conta do grupo 2 (Passivo/PL) com
+  // "(-)" na descrição É retificadora, com natureza invertida em relação ao grupo
+  // (devedora). Isso já valia para o grupo 1 via `isContaRetificadora`, mas no PL
+  // a detecção dependia de uma lista de nomes ("adiantamento de lucros", "ações em
+  // tesouraria") e de faixas de classificação (2.3.x.04) — então "(-) DÉFICITS DO
+  // EXERCÍCIO" ficava de fora: `getNaturezaEsperada` invertia a natureza pelo
+  // prefixo, mas `detectarInversao` (que só isenta redutoras do PL) continuava
+  // acusando a conta de "invertida", e `isContaPassivo` ainda a tratava como
+  // passivo credor comum.
+  if (classRoot(getClassificacao(fullRow)) === '2' && isContaDedutoraPorPrefixo(row)) {
+    return true;
+  }
 
   if (
     /adiantamento.*(lucro|lucros|dividendo)/i.test(n) ||
@@ -646,10 +665,13 @@ function detectarInversao(row: VisionBalanceteRow, allRows: VisionBalanceteRow[]
   // acusar inversão quando estiver com natureza oposta.
   const sinteticaReserva = row.tipo === 'S' && /\breservas?\b/i.test(nomeNorm(row));
   if (row.tipo === 'S' && !sinteticaReserva) return false;
-  // Contas dedutoras (prefixo "(-)") têm natureza esperada já invertida em
-  // relação ao grupo pai (calculada em getNaturezaEsperada) — a comparação
-  // abaixo usa essa natureza correta, então NÃO são excluídas da detecção.
-  if (isContaRedutoraPL(row, allRows)) return false;
+  // Contas dedutoras/retificadoras (prefixo "(-)", redutoras do PL) têm natureza
+  // esperada JÁ invertida em relação ao grupo pai — `getNaturezaEsperada` resolve
+  // isso — e por isso NÃO são excluídas da detecção: a comparação abaixo usa a
+  // natureza correta delas, e saldo do lado oposto continua sendo anomalia.
+  // (Havia aqui um `if (isContaRedutoraPL(...)) return false` que isentava o
+  // grupo inteiro: "(-) DÉFICITS DO EXERCÍCIO" fechando a crédito, ou um
+  // adiantamento de lucros a crédito, nunca eram acusados — falso negativo.)
   if (isContaNaturezaAmbigua(row)) return false;
 
   // Contas de resultado (receitas, custos, despesas — grupos 3-7) herdam a natureza

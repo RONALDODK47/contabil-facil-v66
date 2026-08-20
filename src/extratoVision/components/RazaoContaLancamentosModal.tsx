@@ -196,6 +196,39 @@ export function filtrarLancamentosRazaoDaConta(
   return sortRowsByDataRazao(soAnaliticas);
 }
 
+/**
+ * As linhas exibidas no razão NÃO são as mesmas instâncias de `razaoRows`:
+ * `filtrarContasAnaliticas` passa por `enrichNomeDoPlano`, que devolve um objeto
+ * NOVO (`{...row}`) sempre que a conta é achada no plano. Comparar por referência
+ * (`r === lancamentoEditando`) nunca casava — por isso editar a conta de uma
+ * reclassificação "salvava" sem mudar nada e o Excluir não removia o lançamento.
+ *
+ * Casa pelo que o enriquecimento NÃO altera: id (quando existe), data, ordem,
+ * valores e histórico. `codigo` só entra quando os dois lados o têm preenchido
+ * (o enriquecimento preenche o vazio) e `classificacao` fica de fora porque é
+ * justamente o campo sobrescrito pelo plano.
+ */
+export function mesmaLinhaRazao(a: VisionBalanceteRow, b: VisionBalanceteRow): boolean {
+  if (a === b) return true;
+  if (a.id && b.id) return a.id === b.id;
+  if ((a.data ?? '') !== (b.data ?? '')) return false;
+  if ((a.ordem ?? null) !== (b.ordem ?? null)) return false;
+  if (Math.abs((a.debito ?? 0) - (b.debito ?? 0)) > 0.005) return false;
+  if (Math.abs((a.credito ?? 0) - (b.credito ?? 0)) > 0.005) return false;
+  if ((a.nome ?? '').trim().toUpperCase() !== (b.nome ?? '').trim().toUpperCase()) return false;
+  const codA = normDigits(a.codigo || '');
+  const codB = normDigits(b.codigo || '');
+  if (codA && codB && codA !== codB) return false;
+  return true;
+}
+
+/** Índice da linha original em `razaoRows` correspondente a uma linha exibida no razão. */
+export function indiceLinhaRazao(rows: VisionBalanceteRow[], alvo: VisionBalanceteRow): number {
+  const porReferencia = rows.indexOf(alvo);
+  if (porReferencia >= 0) return porReferencia;
+  return rows.findIndex((r) => mesmaLinhaRazao(r, alvo));
+}
+
 /** Chave estável de um lançamento — usada quando a referência de objeto não é confiável. */
 export function chaveLancamentoRazao(r: VisionBalanceteRow): string {
   return [
@@ -233,7 +266,16 @@ export function coletarLancamentosCausaRaizInvertidos(
     );
     for (const idx of indices) {
       const row = lancamentos[idx];
-      if (row) chaves.add(chaveLancamentoRazao(row));
+      if (!row) continue;
+      chaves.add(chaveLancamentoRazao(row));
+      // `lancamentos` sai enriquecido pelo plano (`enrichNomeDoPlano` reescreve
+      // classificacao/codigo/nome). Quem consome estas chaves — o modo "Razão" do
+      // Balancete — compara com as linhas CRUAS de `razaoRows`, cuja chave é outra
+      // sempre que a linha veio só com o código reduzido, sem classificação. Sem a
+      // chave da linha original, o lançamento causa-raiz simplesmente não era
+      // pintado de vermelho no Balancete (o Razão marcava, o Balancete não).
+      const idxOriginal = indiceLinhaRazao(razaoRows, row);
+      if (idxOriginal >= 0) chaves.add(chaveLancamentoRazao(razaoRows[idxOriginal]!));
     }
   }
 
@@ -608,7 +650,7 @@ export function RazaoContaLancamentosModal({
     const valorAlvo = row.debito > 0 ? row.debito : row.credito;
     const par = razaoRows.find(
       (r) =>
-        r !== row &&
+        !mesmaLinhaRazao(r, row) &&
         r.data === row.data &&
         r.nome === row.nome &&
         Math.abs((ladoQueFalta === 'debito' ? r.debito : r.credito) - valorAlvo) <= 0.005 &&
@@ -636,6 +678,14 @@ export function RazaoContaLancamentosModal({
 
   const salvarEdicao = () => {
     if (!lancamentoEditando || !onRazaoRowsChange) return;
+    // A linha exibida é uma CÓPIA da linha do razão (ver mesmaLinhaRazao); localiza
+    // a original por índice antes de qualquer coisa.
+    const idxOriginal = indiceLinhaRazao(razaoRows, lancamentoEditando);
+    if (idxOriginal < 0) {
+      window.alert('Não foi possível localizar este lançamento no razão para salvar a alteração.');
+      return;
+    }
+    const original = razaoRows[idxOriginal];
     const valor = parseValorInput(editValor);
     const eraDebito = lancamentoEditando.debito > 0;
     const novaData = editData.trim() || lancamentoEditando.data;
@@ -668,15 +718,15 @@ export function RazaoContaLancamentosModal({
     };
 
     const atualizado: VisionBalanceteRow = {
-      ...lancamentoEditando,
+      ...original,
       data: novaData,
       nome: novoNome,
       contaDeb: novaContaDeb,
       contaCred: novaContaCred,
-      codigo: eraDebito ? (novaContaDeb ?? lancamentoEditando.codigo) : (novaContaCred ?? lancamentoEditando.codigo),
+      codigo: eraDebito ? (novaContaDeb ?? original.codigo) : (novaContaCred ?? original.codigo),
       classificacao: eraDebito
-        ? resolverClsSafe(novaContaDeb, lancamentoEditando.classificacao)
-        : resolverClsSafe(novaContaCred, lancamentoEditando.classificacao),
+        ? resolverClsSafe(novaContaDeb, original.classificacao)
+        : resolverClsSafe(novaContaCred, original.classificacao),
       debito: eraDebito ? valor : 0,
       credito: eraDebito ? 0 : valor,
     };
@@ -690,14 +740,17 @@ export function RazaoContaLancamentosModal({
     // podia pegar um lançamento de OUTRA transação com o mesmo `ordem` em outra
     // data e sobrescrever a conta/valor dele — fazendo um lançamento não
     // relacionado "sumir" (mudar de conta/valor) ao editar outro.
-    const ordemPar = lancamentoEditando.ordem;
-    const dataOriginal = lancamentoEditando.data;
-    const par =
+    const ordemPar = original.ordem;
+    const dataOriginal = original.data;
+    const idxPar =
       ordemPar !== undefined
-        ? razaoRows.find((r) => r !== lancamentoEditando && r.ordem === ordemPar && r.data === dataOriginal)
-        : undefined;
+        ? razaoRows.findIndex(
+            (r, i) => i !== idxOriginal && r.ordem === ordemPar && r.data === dataOriginal,
+          )
+        : -1;
+    const par = idxPar >= 0 ? razaoRows[idxPar] : undefined;
 
-    let novasLinhas = razaoRows.map((r) => (r === lancamentoEditando ? atualizado : r));
+    let novasLinhas = razaoRows.map((r, i) => (i === idxOriginal ? atualizado : r));
 
     if (par) {
       const parAtualizado: VisionBalanceteRow = {
@@ -714,7 +767,7 @@ export function RazaoContaLancamentosModal({
         debito: eraDebito ? 0 : valor,
         credito: eraDebito ? valor : 0,
       };
-      novasLinhas = novasLinhas.map((r) => (r === par ? parAtualizado : r));
+      novasLinhas = novasLinhas.map((r, i) => (i === idxPar ? parAtualizado : r));
     }
 
     onRazaoRowsChange(novasLinhas);
@@ -725,29 +778,49 @@ export function RazaoContaLancamentosModal({
     if (!lancamentoEditando || !onRazaoRowsChange) return;
     if (!window.confirm('Excluir este lançamento do razão? Esta ação não pode ser desfeita.')) return;
 
-    const lancamento = lancamentoEditando;
-    const toExcluir = new Set<VisionBalanceteRow>();
-    toExcluir.add(lancamento);
+    // Idem salvarEdicao: a linha da tela é cópia, então localiza a original por índice.
+    const idxOriginal = indiceLinhaRazao(razaoRows, lancamentoEditando);
+    if (idxOriginal < 0) {
+      window.alert('Não foi possível localizar este lançamento no razão para excluir.');
+      return;
+    }
+    const lancamento = razaoRows[idxOriginal];
+    const toExcluir = new Set<number>();
+    toExcluir.add(idxOriginal);
 
     // Procura pela contrapartida usando os mesmos critérios que acharContrapartida:
     // data + histórico + valor. Isso garante que se excluir um débito, também exclui
     // o crédito correspondente (e vice-versa), mantendo a integridade contábil.
     const ladoComValor = lancamento.debito > 0 ? 'debito' : 'credito';
     const valorAlvo = lancamento.debito > 0 ? lancamento.debito : lancamento.credito;
-    const contrapartida = razaoRows.find(
-      (r) =>
-        r !== lancamento &&
-        r.data === lancamento.data &&
-        r.nome === lancamento.nome &&
-        Math.abs((ladoComValor === 'debito' ? r.credito : r.debito) - valorAlvo) <= 0.005 &&
-        (ladoComValor === 'debito' ? r.credito > 0.005 : r.debito > 0.005),
-    );
-
-    if (contrapartida) {
-      toExcluir.add(contrapartida);
+    // A contraparte do MESMO lançamento (mesma `ordem`) vem primeiro; o casamento
+    // por data+histórico+valor é o fallback para lançamentos antigos sem `ordem`.
+    let idxContrapartida =
+      lancamento.ordem !== undefined
+        ? razaoRows.findIndex(
+            (r, i) =>
+              i !== idxOriginal &&
+              r.ordem === lancamento.ordem &&
+              r.data === lancamento.data &&
+              (ladoComValor === 'debito' ? (r.credito ?? 0) > 0.005 : (r.debito ?? 0) > 0.005),
+          )
+        : -1;
+    if (idxContrapartida < 0) {
+      idxContrapartida = razaoRows.findIndex(
+        (r, i) =>
+          i !== idxOriginal &&
+          r.data === lancamento.data &&
+          r.nome === lancamento.nome &&
+          Math.abs((ladoComValor === 'debito' ? r.credito : r.debito) - valorAlvo) <= 0.005 &&
+          (ladoComValor === 'debito' ? r.credito > 0.005 : r.debito > 0.005),
+      );
     }
 
-    onRazaoRowsChange(razaoRows.filter((r) => !toExcluir.has(r)));
+    if (idxContrapartida >= 0) {
+      toExcluir.add(idxContrapartida);
+    }
+
+    onRazaoRowsChange(razaoRows.filter((_, i) => !toExcluir.has(i)));
     setLancamentoEditando(null);
   };
 
