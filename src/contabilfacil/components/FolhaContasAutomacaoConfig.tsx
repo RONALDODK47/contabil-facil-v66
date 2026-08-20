@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { BookOpen, Plus, Trash2, Pencil, Check, X as XIcon, Save, Layers, Info } from 'lucide-react';
+import { BookOpen, Plus, Trash2, Pencil, Check, X as XIcon, Layers, Info } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CF_FORM_INPUT_LONG } from '../lib/formFieldClasses';
 import {
@@ -183,13 +183,13 @@ const FolhaRegraEditableRow = memo(function FolhaRegraEditableRow({
               {regra.descricao}
             </p>
             {regra.destino && (
-              <p className="text-[8px] font-black uppercase tracking-wider text-indigo-700 inline-flex items-center gap-1">
+              <p className="text-[8px] font-black uppercase tracking-wider text-brand-text inline-flex items-center gap-1">
                 <Layers size={9} aria-hidden /> Histórico único ·{' '}
                 {folhaDestinoLabel(regra.destino)}
               </p>
             )}
             {regra.destino && getFolhaDestino(regra.destino)?.compensaAutomaticamenteCom ? (
-              <p className="text-[8px] font-black uppercase tracking-wider text-amber-800 inline-flex items-center gap-1">
+              <p className="text-[8px] font-black uppercase tracking-wider text-brand-text inline-flex items-center gap-1">
                 <Repeat size={9} aria-hidden /> Gera lançamento de compensação
               </p>
             ) : null}
@@ -254,8 +254,9 @@ export default function FolhaContasAutomacaoPanel({
   const [draftCredito, setDraftCredito] = useState('');
   const [historicoPick, setHistoricoPick] = useState('');
   const [draftDestino, setDraftDestino] = useState<FolhaDestinoId | null>(null);
+  /** Busca na lista de regras cadastradas — por histórico ou por conta. */
+  const [buscaRegra, setBuscaRegra] = useState('');
   const [addError, setAddError] = useState('');
-  const [savedOk, setSavedOk] = useState(false);
 
   const destinoSelecionado: FolhaDestinoDef | undefined = draftDestino
     ? getFolhaDestino(draftDestino)
@@ -351,11 +352,22 @@ export default function FolhaContasAutomacaoPanel({
     persist(saveFolhaRegras(selectedCompany, []));
   };
 
-  const handleSalvar = () => {
-    saveFolhaRegras(selectedCompany, regras);
-    setSavedOk(true);
-    setTimeout(() => setSavedOk(false), 2000);
-  };
+  /** Filtra as regras cadastradas por histórico, conta de débito ou de crédito. */
+  const regrasFiltradas = useMemo(() => {
+    const termo = buscaRegra.trim().toLowerCase();
+    if (!termo) return regras;
+    // Só dígitos: procura pela conta. Com letras, procura no histórico também.
+    return regras.filter((r) => {
+      const descricao = r.descricao.toLowerCase();
+      const destino = r.destino ? folhaDestinoLabel(r.destino).toLowerCase() : '';
+      return (
+        descricao.includes(termo) ||
+        destino.includes(termo) ||
+        r.contaDebito.toLowerCase().includes(termo) ||
+        r.contaCredito.toLowerCase().includes(termo)
+      );
+    });
+  }, [regras, buscaRegra]);
 
   return (
     <div className="technical-panel shadow-[4px_4px_0_0_#141414] overflow-hidden">
@@ -376,11 +388,11 @@ export default function FolhaContasAutomacaoPanel({
 
         {/* Histórico selecionado — mostra o que ele cobre e a contrapartida esperada */}
         {destinoSelecionado && (
-          <div className="max-w-2xl border border-indigo-300 bg-indigo-50/60 p-2.5 space-y-1">
+          <div className="max-w-2xl border border-brand-border bg-brand-sidebar/20 p-2.5 space-y-1">
             <div className="flex items-start gap-2">
-              <Info size={11} className="text-indigo-700 shrink-0 mt-0.5" aria-hidden />
+              <Info size={11} className="text-brand-text shrink-0 mt-0.5" aria-hidden />
               <div className="flex-1 min-w-0 space-y-1">
-                <p className="text-[9px] font-black uppercase tracking-wider text-indigo-900">
+                <p className="text-[9px] font-black uppercase tracking-wider text-brand-text">
                   Histórico único · {destinoSelecionado.label}
                 </p>
                 <p className="text-[9px] text-brand-text/70 leading-relaxed">{destinoSelecionado.descricao}</p>
@@ -390,7 +402,7 @@ export default function FolhaContasAutomacaoPanel({
                   <span className="text-emerald-700 font-bold">C: {destinoSelecionado.sugestaoCredito}</span>
                 </p>
                 {destinoSelecionado.compensaAutomaticamenteCom ? (
-                  <p className="text-[8px] text-amber-800 leading-relaxed flex items-start gap-1">
+                  <p className="text-[8px] text-brand-text/80 leading-relaxed flex items-start gap-1">
                     <Repeat size={9} className="shrink-0 mt-0.5" aria-hidden />
                     <span>
                       Gera também um lançamento de compensação: a conta de débito desta regra é
@@ -548,22 +560,11 @@ export default function FolhaContasAutomacaoPanel({
         <div className="flex items-center justify-between gap-2">
           <p className="text-[9px] font-black uppercase tracking-widest text-brand-text/60">
             Regras cadastradas · {regras.length}
+            {buscaRegra.trim() && regrasFiltradas.length !== regras.length
+              ? ` · ${regrasFiltradas.length} na busca`
+              : ''}
           </p>
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleSalvar}
-              className={cn(
-                'technical-button text-[8px] py-1 px-2 inline-flex items-center gap-1 font-bold',
-                savedOk
-                  ? 'text-emerald-800 border-emerald-400 bg-emerald-50'
-                  : 'text-brand-text border-brand-border',
-              )}
-              title="Salvar todas as regras"
-            >
-              {savedOk ? <Check size={11} /> : <Save size={11} />}
-              {savedOk ? 'Salvo!' : 'Salvar regras'}
-            </button>
             {regras.length > 0 && (
               <button
                 type="button"
@@ -581,8 +582,22 @@ export default function FolhaContasAutomacaoPanel({
             Nenhuma regra cadastrada. Puxe um histórico da folha ou preencha o formulário acima.
           </p>
         ) : (
+          <>
+            <input
+              type="text"
+              value={buscaRegra}
+              onChange={(e) => setBuscaRegra(e.target.value)}
+              placeholder="Buscar por nome ou código…"
+              className={INPUT_CLS}
+              aria-label="Buscar regras da folha"
+            />
+            {regrasFiltradas.length === 0 ? (
+              <p className="text-[10px] text-brand-text/45 italic text-center py-8">
+                Nenhuma regra encontrada para «{buscaRegra.trim()}».
+              </p>
+            ) : (
           <ul className="space-y-2 max-h-[560px] overflow-y-auto overscroll-contain pr-0.5">
-            {regras.map((regra) => (
+            {regrasFiltradas.map((regra) => (
               <FolhaRegraEditableRow
                 key={regra.id}
                 regra={regra}
@@ -593,6 +608,8 @@ export default function FolhaContasAutomacaoPanel({
               />
             ))}
           </ul>
+            )}
+          </>
         )}
       </div>
     </div>

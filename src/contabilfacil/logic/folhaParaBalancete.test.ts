@@ -94,6 +94,15 @@ describe('publicar a folha no balancete', () => {
     expect(datas).toEqual(new Set(['31/01/2026', '28/02/2026']));
   });
 
+  it('"IMPORTAR TUDO" (sem período) leva a folha inteira', () => {
+    // É assim que o modal chama quando o usuário escolhe importar tudo: período vazio
+    const tudo = buildFolhaPartidas(LINHAS, REGRAS, { de: '', ate: '' });
+    const semFiltro = buildFolhaPartidas(LINHAS, REGRAS);
+
+    expect(tudo).toEqual(semFiltro);
+    expect(new Set(tudo.map((p) => p.data))).toEqual(new Set(['31/01/2026', '28/02/2026']));
+  });
+
   it('o que vai para o balancete é o mesmo que a aba mostra', () => {
     // Mesma função que alimenta o "Totais por Conta" e o razão por conta
     const daTela = buildFolhaPartidas(LINHAS, REGRAS, { de: '01/02/2026', ate: '28/02/2026' });

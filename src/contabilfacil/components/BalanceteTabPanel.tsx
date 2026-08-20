@@ -6,6 +6,10 @@ import { parseBrDateToTime } from '../../extratoVision/utils/dateBounds';
 import { extrairPeriodoRazao } from '../logic/balancetePeriodoView';
 import { cn } from '../lib/utils';
 import { accountPlansToVisionPlano } from '../logic/contabilPipeline';
+import type {
+  OrigemBalanceteId,
+  OrigemBalanceteResumo,
+} from '../logic/origensBalancete';
 import {
   readPersistedLocalStorageJson,
   writePersistedLocalStorageJson,
@@ -35,6 +39,9 @@ export interface BalanceteTabPanelProps {
   folhaRelatorio?: FolhaRelatorioRow[];
   importedTxts?: Array<{ id: string; filename: string; months: string[]; importedAt: string }>;
   onDeleteImportedTxt?: (id: string) => void;
+  /** O que cada aba (Folha, Conciliação, Fiscal…) publicou no balancete. */
+  origensBalancete?: OrigemBalanceteResumo[];
+  onExcluirOrigemBalancete?: (id: OrigemBalanceteId) => void;
   /** Período De/Até confirmado (o que está sendo visualizado) — usado na exportação TXT. */
   onPeriodoConfirmadoChange?: (periodo: { de: string; ate: string } | null) => void;
   /** Logs da última importação de balancete. */
@@ -120,6 +127,8 @@ export default function BalanceteTabPanel({
   folhaRelatorio = [],
   importedTxts = [],
   onDeleteImportedTxt,
+  origensBalancete = [],
+  onExcluirOrigemBalancete,
   onPeriodoConfirmadoChange,
   importedLogs = [],
 }: BalanceteTabPanelProps) {
@@ -404,7 +413,7 @@ export default function BalanceteTabPanel({
             fiscalRows={[]}
             empresaNome={selectedCompany}
             setPeriodToolbar={setPeriodToolbar}
-            docsImportadosCount={importedTxts.length}
+            docsImportadosCount={importedTxts.length + origensBalancete.length}
             onAbrirDocsImportados={() => setShowTxtsModal(true)}
             importedLogs={importedLogs}
             onAbrirLogs={() => setShowLogsModal(true)}
@@ -435,12 +444,79 @@ export default function BalanceteTabPanel({
             {/* Body */}
             <div className="p-4 overflow-y-auto space-y-3 flex-1">
               <p className="text-[10px] opacity-75 leading-relaxed">
-                Aqui estão listados os arquivos TXT importados nesta empresa. Excluir um arquivo removerá os lançamentos associados a ele, sem afetar outros dados ou as conciliações geradas a partir do extrato.
+                Tudo o que entrou neste balancete: os arquivos importados e o que cada aba publicou.
+                Excluir remove os lançamentos daquela origem, sem tocar nas demais.
+              </p>
+
+              {origensBalancete.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-brand-text/60">
+                    Publicado pelas abas · {origensBalancete.length}
+                  </p>
+                  <div className="border border-brand-border divide-y divide-brand-border">
+                    {origensBalancete.map((o) => (
+                      <div
+                        key={o.origem.id}
+                        className="p-3 flex items-center justify-between gap-4 bg-brand-sidebar/5 hover:bg-brand-sidebar/10 transition-colors"
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <FileCode size={14} className="opacity-70 shrink-0" />
+                            <span className="text-xs font-mono font-bold truncate block">
+                              {o.origem.rotulo}
+                            </span>
+                            <span className="text-[9px] uppercase font-bold text-brand-text/45 shrink-0">
+                              aba {o.origem.aba}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-[9px] text-brand-text/60">
+                            <span>
+                              Lançamentos:{' '}
+                              <strong className="font-mono text-brand-text">
+                                {Math.round(o.linhas / 2).toLocaleString('pt-BR')}
+                              </strong>
+                            </span>
+                            <span>·</span>
+                            <span>
+                              Meses:{' '}
+                              <strong className="bg-brand-border text-brand-bg px-1 font-bold">
+                                {o.meses.join(', ') || 'Sem data'}
+                              </strong>
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Excluir do balancete tudo que veio de «${o.origem.rotulo}»?\n\n` +
+                                  `${Math.round(o.linhas / 2)} lançamento(s) serão removidos do razão. ` +
+                                  `Os dados na aba ${o.origem.aba} continuam lá — dá para publicar de novo.`,
+                              )
+                            ) {
+                              onExcluirOrigemBalancete?.(o.origem.id);
+                            }
+                          }}
+                          className="text-red-700 hover:text-red-600 hover:bg-red-50 p-1.5 border border-transparent hover:border-red-200 transition-all shrink-0"
+                          title={`Excluir os lançamentos de ${o.origem.rotulo}`}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[9px] font-black uppercase tracking-widest text-brand-text/60">
+                Arquivos importados · {importedTxts.length}
               </p>
               
               {importedTxts.length === 0 ? (
                 <div className="text-center py-6 text-[10px] uppercase font-bold text-slate-400">
-                  Nenhum arquivo TXT registrado no momento.
+                  Nenhum arquivo importado no momento.
                 </div>
               ) : (
                 <div className="border border-brand-border divide-y divide-brand-border">

@@ -150,6 +150,12 @@ import {
   buildFolhaTotaisPorConta,
   mergeFolhaPartidasComRazao,
 } from '../logic/folhaToRazao';
+import {
+  getOrigemBalancete,
+  removerOrigemDoBalancete,
+  resumirOrigensDoBalancete,
+  type OrigemBalanceteId,
+} from '../logic/origensBalancete';
 import { loadFolhaRegras, resolveFolhaRegraContas, type FolhaRegra } from '../logic/folhaContasAutomacaoStorage';
 import { parseAndRenderPDFPage, openPdfDocument, pdfTextItemsToLines } from '../../lib/leitorRecortador/pdfParser';
 import { parseFolhaTextMultiCompetencia } from '../../lib/folhaParser/folhaPDFParser';
@@ -537,7 +543,7 @@ export default function ManagerModule({
   const [showBalanceteConflictModal, setShowBalanceteConflictModal] = useState(false);
   const [forceOverwriteBalancete, setForceOverwriteBalancete] = useState(false);
   const [periodoModalConciliacaoOpen, setPeriodoModalConciliacaoOpen] = useState(false);
-  const [periodoModalFolhaOpen, setPeriodoModalFolhaOpen] = useState(false);
+  const [periodoModalImportFolhaOpen, setPeriodoModalImportFolhaOpen] = useState(false);
   const [periodoModalExportExtratoOpen, setPeriodoModalExportExtratoOpen] = useState(false);
   const [periodoModalImportBalanceteOpen, setPeriodoModalImportBalanceteOpen] = useState(false);
   const lastPeriodoConciliacaoRef = React.useRef<BalancetePeriodo | null>(null);
@@ -851,16 +857,16 @@ export default function ManagerModule({
     [selectedCompany, folhaRelatorio],
   );
 
-  const handleMandarFolhaParaBalancete = useCallback(() => {
+  const handleImportarFolhaParaBalancete = useCallback(() => {
     if (folhaRelatorio.length === 0) {
       alert('Nenhum lançamento de folha importado.');
       return;
     }
     if (folhaRegras.length === 0) {
-      alert('Configure as regras de contas da folha antes de enviar ao balancete.');
+      alert('Configure as regras de contas da folha antes de importar para o balancete.');
       return;
     }
-    setPeriodoModalFolhaOpen(true);
+    setPeriodoModalImportFolhaOpen(true);
   }, [folhaRelatorio.length, folhaRegras.length]);
 
   /**
@@ -870,13 +876,22 @@ export default function ManagerModule({
    * por palavras-chave fixas e caía num par de contas legado — o balancete podia receber algo
    * diferente do que a tela exibia, e o período escolhido no modal era ignorado.
    */
-  const handlePeriodoFolhaConfirmado = useCallback(
-    (periodo: BalancetePeriodo) => {
-      setPeriodoModalFolhaOpen(false);
+  /**
+   * Publica no balancete EXATAMENTE as partidas que a aba Totais por Conta mostra.
+   *
+   * Antes isso passava por um caminho paralelo (`postFolhaNoRazao`), que reconhecia a rubrica
+   * por palavras-chave fixas e caía num par de contas legado — o balancete podia receber algo
+   * diferente do que a tela exibia, e o período escolhido no modal era ignorado.
+   *
+   * Sem `periodo` (opção "IMPORTAR TUDO"), leva a folha inteira, como faz a conciliação.
+   */
+  const handleImportarFolhaConfirmado = useCallback(
+    (periodo?: BalancetePeriodo) => {
+      setPeriodoModalImportFolhaOpen(false);
       try {
         const isoParaBr = (iso: string) => iso.split('-').reverse().join('/');
-        const de = isoParaBr(periodo.dataInicio);
-        const ate = isoParaBr(periodo.dataFim);
+        const de = periodo ? isoParaBr(periodo.dataInicio) : '';
+        const ate = periodo ? isoParaBr(periodo.dataFim) : '';
 
         const partidas = buildFolhaPartidas(
           folhaRelatorio,
@@ -887,8 +902,10 @@ export default function ManagerModule({
 
         if (partidas.length === 0) {
           alert(
-            `Nenhum lançamento com regra de conta entre ${de} e ${ate}.\n\n` +
-              'Confira o período e as regras cadastradas na aba Folha.',
+            (periodo
+              ? `Nenhum lançamento com regra de conta entre ${de} e ${ate}.`
+              : 'Nenhum lançamento da folha tem regra de conta correspondente.') +
+              '\n\nConfira as regras cadastradas na aba Folha.',
           );
           return;
         }
@@ -901,13 +918,13 @@ export default function ManagerModule({
         // Cada lançamento tem duas pernas; o que interessa contar é o lançamento.
         const lancamentos = partidas.length / 2;
         alert(
-          `${lancamentos} lançamento(s) da folha enviados ao balancete.\n` +
-            `Período: ${de} até ${ate}\n\n` +
-            'Reenviar a mesma folha substitui estes lançamentos, não duplica.\n' +
+          `${lancamentos} lançamento(s) da folha importados para o balancete.\n` +
+            (periodo ? `Período: ${de} até ${ate}\n` : 'Folha inteira\n') +
+            '\nReimportar substitui estes lançamentos, não duplica.\n' +
             'Abra a aba Balancete para conferir.',
         );
       } catch (err) {
-        alert(err instanceof Error ? err.message : 'Falha ao enviar para o balancete.');
+        alert(err instanceof Error ? err.message : 'Falha ao importar para o balancete.');
       }
     },
     [folhaRelatorio, folhaRegras, planoClassificacaoPorConta, razaoRows, selectedCompany],
@@ -2089,6 +2106,30 @@ export default function ManagerModule({
    * contas da folha também recebem movimento da conciliação bancária, que não pertence a esta
    * aba, e enquanto a folha não é publicada no balancete o razão não tem linha nenhuma dela.
    */
+  /**
+   * O que cada aba publicou no balancete — a lista de "Docs. Importados" mostra isso ao lado
+   * dos arquivos importados, para que dê para remover a remessa de uma aba inteira.
+   */
+  const origensDoBalancete = useMemo(() => resumirOrigensDoBalancete(razaoRows), [razaoRows]);
+
+  const handleExcluirOrigemBalancete = useCallback(
+    (id: OrigemBalanceteId) => {
+      const rotulo = getOrigemBalancete(id)?.rotulo ?? id;
+      const restantes = removerOrigemDoBalancete(razaoRows, id);
+      const removidos = razaoRows.length - restantes.length;
+
+      setRazaoRows(restantes);
+      writeManagerDataNow(selectedCompany, 'razao', restantes);
+      void flushPersistenceAfterCriticalWrite();
+
+      alert(
+        `${Math.round(removidos / 2)} lançamento(s) de «${rotulo}» removidos do balancete.\n\n` +
+          'Os dados na aba de origem continuam lá — dá para publicar de novo quando quiser.',
+      );
+    },
+    [razaoRows, selectedCompany],
+  );
+
   const folhaPartidas = useMemo(
     () =>
       buildFolhaPartidas(
@@ -3962,6 +4003,8 @@ export default function ManagerModule({
                     folhaRelatorio={folhaRelatorio}
                     importedTxts={importedTxts}
                     onDeleteImportedTxt={deleteImportedTxt}
+                    origensBalancete={origensDoBalancete}
+                    onExcluirOrigemBalancete={handleExcluirOrigemBalancete}
                     onPeriodoConfirmadoChange={setBalancetePeriodoConfirmado}
                     importedLogs={balanceteImportLogs}
                   />
@@ -4098,17 +4141,17 @@ export default function ManagerModule({
                             </button>
                             <button
                               type="button"
-                              onClick={handleMandarFolhaParaBalancete}
+                              onClick={handleImportarFolhaParaBalancete}
                               disabled={folhaRelatorio.length === 0 || folhaRegras.length === 0}
-                              className="technical-button-primary text-[10px] px-3 py-1.5 flex items-center gap-1.5 font-bold disabled:opacity-40"
+                              className="technical-button text-[10px] px-2 py-1.5 flex items-center gap-1.5 font-bold disabled:opacity-40"
                               title={
                                 folhaRegras.length === 0
                                   ? 'Cadastre as regras de contas da folha primeiro'
-                                  : 'Publica os lançamentos da folha no balancete/razão, por período'
+                                  : 'Leva os lançamentos da folha para o balancete — por período ou tudo'
                               }
                             >
-                              <Upload size={13} />
-                              Mandar para o Balancete
+                              <Upload size={13} className="text-emerald-700" />
+                              Importar para o balancete
                             </button>
 
                           </div>
@@ -4817,10 +4860,14 @@ export default function ManagerModule({
         }}
         onCancel={() => setPeriodoModalConciliacaoOpen(false)}
       />
-      <BalancetePeriodoModal
-        isOpen={periodoModalFolhaOpen}
-        onConfirm={handlePeriodoFolhaConfirmado}
-        onCancel={() => setPeriodoModalFolhaOpen(false)}
+      <ExtratoPeriodoExportModal
+        isOpen={periodoModalImportFolhaOpen}
+        title="Importar Folha para o Balancete"
+        subtitle="Escolha o periodo (ex.: um mes) ou importe tudo de uma vez"
+        confirmAllLabel="IMPORTAR TUDO"
+        onConfirm={(periodo) => handleImportarFolhaConfirmado(periodo)}
+        onConfirmAll={() => handleImportarFolhaConfirmado()}
+        onCancel={() => setPeriodoModalImportFolhaOpen(false)}
       />
       <ExtratoPeriodoExportModal
         isOpen={periodoModalImportBalanceteOpen}
