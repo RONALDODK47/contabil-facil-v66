@@ -2,8 +2,7 @@ import { memo, useMemo } from 'react';
 import { Trash2 } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '../lib/utils';
 import { useVirtualWindow, VirtualSpacerRow } from '../lib/useVirtualWindow';
-import { normalizeExtratoMatchText } from '../logic/extratoRegrasContasStorage';
-import type { FolhaRegra } from '../logic/folhaContasAutomacaoStorage';
+import { resolveFolhaRegraContas, type FolhaRegra } from '../logic/folhaContasAutomacaoStorage';
 
 const REL_COL_SPAN = 7;
 const PAYROLL_COL_SPAN = 7;
@@ -40,12 +39,16 @@ export interface FolhaPayrollRow {
   net: number;
 }
 
-function findMatchingRegra(description: string, regras: FolhaRegra[]): FolhaRegra | undefined {
-  const descNorm = normalizeExtratoMatchText(description);
-  return regras.find((r) => {
-    const rNorm = normalizeExtratoMatchText(r.descricao);
-    return rNorm && descNorm.includes(rNorm);
-  });
+/**
+ * Usa o mesmo resolvedor da geração de lançamentos para que a coluna de contas mostre
+ * exatamente a regra que será aplicada — inclusive as regras por GRUPO de rubrica.
+ */
+function findMatchingRegra(
+  description: string,
+  regras: FolhaRegra[],
+  tipo?: 'PROVENTOS' | 'DESCONTOS' | 'INFORMATIVA',
+): FolhaRegra | undefined {
+  return resolveFolhaRegraContas(description, regras, tipo) ?? undefined;
 }
 
 const RelatorioRow = memo(function RelatorioRow({
@@ -64,7 +67,7 @@ const RelatorioRow = memo(function RelatorioRow({
   const tipoCls = TIPO_CLS[tipoKey] ?? 'border-brand-border/40 bg-brand-sidebar/30 text-brand-text/50';
   const valor = row.debito > 0 ? row.debito : row.credito;
   const valorCls = row.debito > 0 ? 'text-red-600' : 'text-emerald-700';
-  const regra = findMatchingRegra(row.description, regras);
+  const regra = findMatchingRegra(row.description, regras, row.tipo);
   return (
     <tr className={cn('technical-grid-row', fixedHeight && 'h-10 max-h-10')}>
       <td className="px-4 py-3 border-r border-brand-border/10 whitespace-nowrap">{formatDate(row.date)}</td>

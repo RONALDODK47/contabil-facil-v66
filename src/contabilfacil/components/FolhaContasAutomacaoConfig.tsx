@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { BookOpen, Plus, Trash2, Pencil, Check, X as XIcon, Save } from 'lucide-react';
+import { BookOpen, Plus, Trash2, Pencil, Check, X as XIcon, Save, Layers, Info } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CF_FORM_INPUT_LONG } from '../lib/formFieldClasses';
 import {
@@ -10,9 +10,20 @@ import {
   updateFolhaRegra,
   type FolhaRegra,
 } from '../logic/folhaContasAutomacaoStorage';
+import { construirHistoricosFolha } from '../logic/folhaContasAutomacaoStorage';
+// `FolhaHistoricoOpcao` estende ExtratoHistoricoPadrao com o destino — o picker só lê os campos comuns.
 import ExtratoContaPicker, { type ExtratoPlanoContaOption } from './ExtratoContaPicker';
-import ExtratoHistoricoPicker, { type ExtratoHistoricoPadrao } from './ExtratoHistoricoPicker';
+import ExtratoHistoricoPicker from './ExtratoHistoricoPicker';
 import { normalizeExtratoMatchText } from '../logic/extratoRegrasContasStorage';
+import {
+  agruparRubricasPorDestino,
+  classificarRubricaDestino,
+  folhaDestinoLabel,
+  getFolhaDestino,
+  type FolhaDestinoDef,
+  type FolhaDestinoId,
+} from '../logic/folhaRubricaTaxonomia';
+import { Repeat } from 'lucide-react';
 
 const INPUT_CLS = cn(
   CF_FORM_INPUT_LONG,
@@ -171,6 +182,17 @@ const FolhaRegraEditableRow = memo(function FolhaRegraEditableRow({
             <p className="text-[10px] font-bold font-mono uppercase truncate text-brand-text" title={regra.descricao}>
               {regra.descricao}
             </p>
+            {regra.destino && (
+              <p className="text-[8px] font-black uppercase tracking-wider text-indigo-700 inline-flex items-center gap-1">
+                <Layers size={9} aria-hidden /> Histórico único ·{' '}
+                {folhaDestinoLabel(regra.destino)}
+              </p>
+            )}
+            {regra.destino && getFolhaDestino(regra.destino)?.compensaAutomaticamenteCom ? (
+              <p className="text-[8px] font-black uppercase tracking-wider text-amber-800 inline-flex items-center gap-1">
+                <Repeat size={9} aria-hidden /> Gera lançamento de compensação
+              </p>
+            ) : null}
             <p className="text-[8px] font-mono text-brand-text/55">
               <span className="text-rose-700 font-bold">D: {regra.contaDebito}</span>
               <span className="mx-1.5 text-brand-text/30">·</span>
@@ -231,30 +253,47 @@ export default function FolhaContasAutomacaoPanel({
   const [draftDebito, setDraftDebito] = useState('');
   const [draftCredito, setDraftCredito] = useState('');
   const [historicoPick, setHistoricoPick] = useState('');
+  const [draftDestino, setDraftDestino] = useState<FolhaDestinoId | null>(null);
   const [addError, setAddError] = useState('');
   const [savedOk, setSavedOk] = useState(false);
 
-  /** Padrões de histórico vindos dos lançamentos da folha importada — exclui os já cobertos. */
-  const padroesHistorico = useMemo((): ExtratoHistoricoPadrao[] => {
-    if (folhaRelatorio.length === 0) return [];
-    const cobertos = new Set(
-      regras.map((r) => normalizeExtratoMatchText(r.descricao)),
+  const destinoSelecionado: FolhaDestinoDef | undefined = draftDestino
+    ? getFolhaDestino(draftDestino)
+    : undefined;
+
+  /**
+   * Históricos únicos detectados na folha importada. Cada entrada reúne TODAS as rubricas cujo
+   * lançamento vai para o mesmo par débito/crédito — salário base, saldo de salário, DSR,
+   * hora extra e gratificação viram uma linha só, com um débito e um crédito a informar.
+   */
+  const destinosDetectados = useMemo(() => {
+    const destinos = agruparRubricasPorDestino(
+      folhaRelatorio.map((r) => ({ descricao: String(r.description ?? ''), tipo: r.tipo })),
     );
-    const map = new Map<string, ExtratoHistoricoPadrao>();
-    for (const row of folhaRelatorio) {
-      const texto = String(row.description ?? '').replace(/\s+/g, ' ').trim();
-      if (!texto) continue;
-      const norm = normalizeExtratoMatchText(texto);
-      // Considera coberto se alguma regra já é substring deste texto
-      if ([...cobertos].some((c) => c && norm.includes(c))) continue;
-      const key = norm;
-      const cur = map.get(key);
-      const nature: 'D' | 'C' = row.tipo === 'DESCONTOS' ? 'D' : 'C';
-      if (cur) cur.ocorrencias += 1;
-      else map.set(key, { descricao: texto, nature, ocorrencias: 1 });
-    }
-    return [...map.values()].sort((a, b) => b.ocorrencias - a.ocorrencias);
+    return destinos.map((d) => ({
+      ...d,
+      /** Já existe histórico único cadastrado para este destino? */
+      coberto: regras.some((r) => r.destino === d.destino.id),
+    }));
   }, [folhaRelatorio, regras]);
+
+  /**
+   * Opções do seletor "Puxar histórico da folha" — já consolidadas por destino contábil
+   * (ver `construirHistoricosFolha`), e não uma linha por rubrica.
+   */
+  const padroesHistorico = useMemo(
+    () => construirHistoricosFolha(folhaRelatorio, regras),
+    [folhaRelatorio, regras],
+  );
+
+  /** Descrição exibida no seletor → destino, para saber o que foi escolhido. */
+  const destinoPorLabel = useMemo(() => {
+    const map = new Map<string, FolhaDestinoId>();
+    for (const opcao of padroesHistorico) {
+      if (opcao.destino) map.set(opcao.descricao, opcao.destino);
+    }
+    return map;
+  }, [padroesHistorico]);
 
   const handleAdd = useCallback(() => {
     const desc = draftDesc.trim();
@@ -264,12 +303,33 @@ export default function FolhaContasAutomacaoPanel({
     if (!deb) { setAddError('Informe a conta débito.'); return; }
     if (!cred) { setAddError('Informe a conta crédito.'); return; }
     setAddError('');
-    persist(addFolhaRegra(selectedCompany, { descricao: desc, contaDebito: deb, contaCredito: cred }));
+    persist(
+      addFolhaRegra(selectedCompany, {
+        descricao: desc,
+        contaDebito: deb,
+        contaCredito: cred,
+        ...(draftDestino ? { destino: draftDestino } : {}),
+      }),
+    );
     setDraftDesc('');
     setDraftDebito('');
     setDraftCredito('');
     setHistoricoPick('');
-  }, [draftDesc, draftDebito, draftCredito, persist, selectedCompany]);
+    setDraftDestino(null);
+  }, [draftDesc, draftDebito, draftCredito, draftDestino, persist, selectedCompany]);
+
+  /** Carrega um histórico único no formulário — só faltam as duas contas. */
+  const handlePickDestino = useCallback((destino: FolhaDestinoDef) => {
+    setDraftDestino(destino.id);
+    setDraftDesc(destino.label);
+    setHistoricoPick('');
+    setAddError('');
+  }, []);
+
+  const handleClearDestino = useCallback(() => {
+    setDraftDestino(null);
+    setDraftDesc('');
+  }, []);
 
   const handleSave = useCallback(
     (id: string, patch: Partial<Omit<FolhaRegra, 'id'>>) => {
@@ -314,12 +374,65 @@ export default function FolhaContasAutomacaoPanel({
       <div className="p-4 border-b border-brand-border/40 bg-brand-sidebar/10 space-y-3">
         <p className="text-[9px] font-black uppercase tracking-widest text-brand-text/60">Nova regra</p>
 
+        {/* Histórico selecionado — mostra o que ele cobre e a contrapartida esperada */}
+        {destinoSelecionado && (
+          <div className="max-w-2xl border border-indigo-300 bg-indigo-50/60 p-2.5 space-y-1">
+            <div className="flex items-start gap-2">
+              <Info size={11} className="text-indigo-700 shrink-0 mt-0.5" aria-hidden />
+              <div className="flex-1 min-w-0 space-y-1">
+                <p className="text-[9px] font-black uppercase tracking-wider text-indigo-900">
+                  Histórico único · {destinoSelecionado.label}
+                </p>
+                <p className="text-[9px] text-brand-text/70 leading-relaxed">{destinoSelecionado.descricao}</p>
+                <p className="text-[8px] font-mono uppercase text-brand-text/60">
+                  <span className="text-rose-700 font-bold">D: {destinoSelecionado.sugestaoDebito}</span>
+                  <span className="mx-1.5 text-brand-text/30">·</span>
+                  <span className="text-emerald-700 font-bold">C: {destinoSelecionado.sugestaoCredito}</span>
+                </p>
+                {destinoSelecionado.compensaAutomaticamenteCom ? (
+                  <p className="text-[8px] text-amber-800 leading-relaxed flex items-start gap-1">
+                    <Repeat size={9} className="shrink-0 mt-0.5" aria-hidden />
+                    <span>
+                      Gera também um lançamento de compensação: a conta de débito desta regra é
+                      zerada contra a conta de recolhimento de «
+                      {folhaDestinoLabel(destinoSelecionado.compensaAutomaticamenteCom)}». Cadastre
+                      esse histórico também, senão a conta a recuperar fica com saldo.
+                    </span>
+                  </p>
+                ) : null}
+                {(() => {
+                  const detectado = destinosDetectados.find((d) => d.destino.id === destinoSelecionado.id);
+                  if (!detectado || detectado.rubricas.length === 0) return null;
+                  return (
+                    <p className="text-[8px] text-brand-text/55 font-mono leading-relaxed">
+                      Cobre {detectado.rubricas.length} rubrica(s) desta folha: {detectado.rubricas.join(' · ')}
+                    </p>
+                  );
+                })()}
+              </div>
+              <button
+                type="button"
+                onClick={handleClearDestino}
+                className="technical-button text-[8px] py-0.5 px-1.5 shrink-0"
+                aria-label="Remover histórico selecionado"
+              >
+                <XIcon size={10} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Historico picker */}
         {padroesHistorico.length > 0 && (
           <div className="space-y-1 max-w-2xl">
             <label className="text-[8px] font-bold uppercase text-brand-text/50 block">
               Puxar histórico da folha ({padroesHistorico.length} sem regra)
             </label>
+            <p className="text-[8px] text-brand-text/45 leading-relaxed">
+              As rubricas já vêm agrupadas: cada histórico reúne todos os lançamentos que vão
+              para o mesmo débito e crédito. Só aparecem separadas as rubricas que o sistema
+              não conseguiu classificar.
+            </p>
             <ExtratoHistoricoPicker
               padroes={padroesHistorico}
               value={historicoPick}
@@ -327,6 +440,9 @@ export default function FolhaContasAutomacaoPanel({
               onSelect={(hit) => {
                 setHistoricoPick(`${hit.nature}|${hit.descricao}`);
                 setDraftDesc(hit.descricao);
+                // Histórico consolidado → a regra vale para o destino inteiro; rubrica avulsa
+                // (não classificada) → regra por texto, como antes.
+                setDraftDestino(destinoPorLabel.get(hit.descricao) ?? null);
                 setAddError('');
               }}
               onClear={() => {
@@ -345,7 +461,7 @@ export default function FolhaContasAutomacaoPanel({
           <input
             type="text"
             value={draftDesc}
-            onChange={(e) => { setDraftDesc(e.target.value); setHistoricoPick(''); setAddError(''); }}
+            onChange={(e) => { setDraftDesc(e.target.value); setHistoricoPick(''); setDraftDestino(null); setAddError(''); }}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } }}
             placeholder="Ex.: SALÁRIOS, INSS, FGTS, PROLABORE…"
             className={INPUT_CLS}

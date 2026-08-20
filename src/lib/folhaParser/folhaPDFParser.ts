@@ -19,6 +19,16 @@ export interface FolhaParserResult {
   data: string; // DD/MM/YYYY (último dia do mês)
   empresa?: string;
   cnpj?: string;
+  /** Cabeçalho "Cálculo:" — ex.: "Folha Mensal e Complementar", "Rescisão". */
+  tipoCalculo?: string;
+  /** Cabeçalho "Complemento de cálculo:" — ex.: "Todos". */
+  complementoCalculo?: string;
+  /**
+   * `true` quando o relatório mistura folha mensal e rescisão nas mesmas rubricas. Nesse caso
+   * o valor do empregado desligado está somado dentro das linhas de salário e NÃO é separável:
+   * quem consome precisa avisar em vez de dividir por conta própria.
+   */
+  agregaFolhaERescisao?: boolean;
   lancements: FolhaLancamento[];
   errors: string[];
 }
@@ -63,6 +73,27 @@ export function getLastDayOfMonth(competencia: string): string {
 const COMPETENCIA_PATTERN = /Compet[êe]ncia:\s*(\d{1,2}\/\d{4})/i;
 const EMPRESA_PATTERN = /Empresa:\s*(.+?)(?:\n|$)/i;
 const CNPJ_PATTERN = /CNPJ:\s*(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/i;
+// "Cálculo: Folha Mensal e Complementar Hora: 18:55:13" — para antes de "Hora:"
+const CALCULO_PATTERN = /C[áa]lculo:\s*(.+?)(?:\s{2,}|\s+Hora:|\n|$)/i;
+const COMPLEMENTO_PATTERN = /Complemento\s+de\s+c[áa]lculo:\s*(.+?)(?:\n|$)/i;
+
+/** O nome do tipo de cálculo indica rescisão? */
+export function calculoEhRescisao(tipoCalculo: string | undefined): boolean {
+  return /RESCIS/i.test(String(tipoCalculo ?? ''));
+}
+
+/**
+ * O cabeçalho indica um relatório que soma mais de um tipo de cálculo na mesma rubrica?
+ *
+ * "Folha Mensal E Complementar" / "Todos" são os rótulos do Domínio para o modo agregado.
+ */
+export function calculoEhAgregado(tipoCalculo?: string, complemento?: string): boolean {
+  const t = String(tipoCalculo ?? '');
+  const c = String(complemento ?? '');
+  if (/\bE\s+COMPLEMENTAR\b/i.test(t)) return true;
+  if (/\bTODOS\b/i.test(t) || /\bTODOS\b/i.test(c)) return true;
+  return false;
+}
 
 // Padrão para detectar seção de tipo
 const TIPO_PATTERN = /^(PROVENTOS|DESCONTOS|INFORMATIVA)\s*$/i;
@@ -129,6 +160,12 @@ export function parseFolhaText(text: string): FolhaParserResult {
   if (cnpjMatch) {
     result.cnpj = cnpjMatch[1];
   }
+
+  const calculoMatch = CALCULO_PATTERN.exec(text);
+  if (calculoMatch) result.tipoCalculo = calculoMatch[1].trim();
+  const complementoMatch = COMPLEMENTO_PATTERN.exec(text);
+  if (complementoMatch) result.complementoCalculo = complementoMatch[1].trim();
+  result.agregaFolhaERescisao = calculoEhAgregado(result.tipoCalculo, result.complementoCalculo);
 
   if (!result.competencia) {
     result.errors.push('COMPETÊNCIA não encontrada no PDF');

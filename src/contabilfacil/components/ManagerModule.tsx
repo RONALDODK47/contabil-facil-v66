@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef, startTransition } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef, startTransition, Fragment } from 'react';
 import {
   Plus,
   FileSpreadsheet,
@@ -144,10 +144,19 @@ import { buildExtratoFiscalContext } from '../logic/extratoFiscalContext';
 import { compareClassificacaoContabil } from '../../extratoVision/utils/demonstracoesContabeis';
 import { tryAutoSyncFiscalSpedOnOpen } from '../logic/fiscalSpedAutomation';
 import { tryAutoSyncFiscalPgdasOnOpen } from '../logic/fiscalPgdasAutomation';
-import { postFolhaNoRazao } from '../logic/folhaAutomation';
-import { loadFolhaRegras, type FolhaRegra } from '../logic/folhaContasAutomacaoStorage';
+import {
+  agruparFolhaTotaisPorNatureza,
+  buildFolhaPartidas,
+  buildFolhaTotaisPorConta,
+  mergeFolhaPartidasComRazao,
+} from '../logic/folhaToRazao';
+import { loadFolhaRegras, resolveFolhaRegraContas, type FolhaRegra } from '../logic/folhaContasAutomacaoStorage';
 import { parseAndRenderPDFPage, openPdfDocument, pdfTextItemsToLines } from '../../lib/leitorRecortador/pdfParser';
 import { parseFolhaTextMultiCompetencia } from '../../lib/folhaParser/folhaPDFParser';
+import {
+  encargosEmpresaParaLinhasFolha,
+  parseApuracaoTributos,
+} from '../../lib/folhaParser/apuracaoTributosParser';
 import FolhaModule from './FolhaModule';
 
 import {
@@ -203,6 +212,7 @@ import { loadFiscalContasImposto } from '../logic/fiscalContasImpostoStorage';
 import { warmupSharedOcrWorker } from '../../lib/imageOcrExtract';
 import type { VisionBalanceteRow } from '../../extratoVision/types/accounting';
 import { RazaoContaLancamentosModal } from '../../extratoVision/components/RazaoContaLancamentosModal';
+import { LayoutApuracaoTributos, LayoutResumoFolha } from './FolhaLayoutPreview';
 import TabLoadingFallback from './TabLoadingFallback';
 import { ActiveCompanySelector } from './ActiveCompanySelector';
 import type { CompanyWorkspaceControls } from '../types/companyWorkspaceControls';
@@ -328,6 +338,8 @@ interface FolhaRelatorioRow {
   debito: number;
   credito: number;
   tipo?: 'PROVENTOS' | 'DESCONTOS' | 'INFORMATIVA';
+  /** Cabeçalho "Cálculo:" do relatório de origem (Folha Mensal, Rescisão, …). */
+  tipoCalculo?: string;
 }
 
 interface PayrollRecord {
@@ -457,6 +469,41 @@ export default function ManagerModule({
 
   // Local states
   const [planoContas, setPlanoContas] = useState<AccountPlan[]>([]);
+
+  /**
+   * Código reduzido (ou classificação) → conta do plano.
+   *
+   * O reduzido tem prioridade: as regras da folha guardam o reduzido, e um reduzido curto
+   * colide com a classificação de uma sintética de primeiro nível — o reduzido "6" (Fundo fixo
+   * de caixa) contra a classificação "6" (Contas de compensação), por exemplo, fazia a conta
+   * aparecer com o nome errado nos totais.
+   */
+  const planoContaPorCodigo = useMemo(() => {
+    const map = new Map<string, (typeof planoContas)[number]>();
+    for (const a of planoContas) {
+      if (a.code && !map.has(a.code)) map.set(a.code, a);
+    }
+    for (const a of planoContas) {
+      if (a.codigoReduzido) map.set(a.codigoReduzido, a);
+    }
+    return map;
+  }, [planoContas]);
+
+  const planoNomePorConta = useCallback(
+    (codigo: string) => planoContaPorCodigo.get(codigo)?.name ?? codigo,
+    [planoContaPorCodigo],
+  );
+
+  /**
+   * Classificação contábil da conta. O razão da Folha precisa dela para derivar a natureza
+   * (devedora/credora) — sem isso "Salários a pagar" aparece como devedora e o modal marca
+   * todas as linhas como saldo invertido.
+   */
+  const planoClassificacaoPorConta = useCallback(
+    (codigo: string) => planoContaPorCodigo.get(codigo)?.code ?? '',
+    [planoContaPorCodigo],
+  );
+
   const [extratoLancamentos, setExtratoLancamentos] = useState<BankStatement[]>([]);
   const [folhaPayroll, setFolhaPayroll] = useState<PayrollRecord[]>([]);
   const [folhaRelatorio, setFolhaRelatorio] = useState<FolhaRelatorioRow[]>([]);
@@ -505,11 +552,17 @@ export default function ManagerModule({
   const [showImportLancamentosModal, setShowImportLancamentosModal] = useState(false);
   const [showFolhaRegrasModal, setShowFolhaRegrasModal] = useState(false);
   const [folhaPdfProcessando, setFolhaPdfProcessando] = useState(false);
+  /** Aviso de relatório que mistura folha mensal e rescisão na mesma rubrica. */
+  const [folhaRelatorioAviso, setFolhaRelatorioAviso] = useState('');
+  /** Modal de escolha do layout ao importar PDF do Domínio na Folha. */
+  const [folhaLayoutModalOpen, setFolhaLayoutModalOpen] = useState(false);
+  const [folhaEncargosProcessando, setFolhaEncargosProcessando] = useState(false);
+  const [folhaEncargosMsg, setFolhaEncargosMsg] = useState('');
   const [folhaPdfMsg, setFolhaPdfMsg] = useState('');
   const [folhaDeleteDate, setFolhaDeleteDate] = useState('');
   const [folhaSubTab, setFolhaSubTab] = useState<'lancamentos' | 'totais'>('lancamentos');
-  const [folhaTotaisDe, setFolhaTotaisDe] = useState('');
-  const [folhaTotaisAte, setFolhaTotaisAte] = useState('');
+  /** Competência escolhida em "Totais por Conta" ('' = todas). Sempre uma data existente na folha. */
+  const [folhaTotaisData, setFolhaTotaisData] = useState('');
   const [folhaTotaisRazaoOpen, setFolhaTotaisRazaoOpen] = useState(false);
   const [folhaTotaisRazaoConta, setFolhaTotaisRazaoConta] = useState<{ conta: string; nomeConta: string } | null>(null);
   // New Account state
@@ -551,6 +604,7 @@ export default function ManagerModule({
   extratoContaCacheRef.current = extratoContaCache;
   const extratoAsyncVersionRef = useRef(0);
   const folhaDominioInputRef = useRef<HTMLInputElement>(null);
+  const folhaEncargosInputRef = useRef<HTMLInputElement>(null);
 
   const isExtratoAsyncResultStale = useCallback(
     (companyScope: string, version: number) =>
@@ -648,6 +702,67 @@ export default function ManagerModule({
     setRazaoRows(readManagerData<VisionBalanceteRow>(selectedCompany, 'razao'));
   }, [selectedCompany]);
 
+  /**
+   * Importa o "Apuração de Tributos Federais" (Domínio) — os ENCARGOS DA EMPRESA sobre a folha.
+   *
+   * O Resumo da Folha traz o que sai do salário do empregado; o INSS patronal/RAT e o PIS sobre
+   * a folha das entidades imunes e isentas só existem neste relatório. Entram pelo "Saldo a
+   * recolher" (já líquido das compensações, como o salário-família) e como crédito: a obrigação
+   * a recolher, com a despesa do outro lado definida pela regra cadastrada.
+   */
+  const handleFolhaEncargosFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file || !selectedCompany) return;
+
+      setFolhaEncargosProcessando(true);
+      setFolhaEncargosMsg('');
+      try {
+        const pdfDoc = await openPdfDocument(file);
+        let extractedText = '';
+        for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+          const page = await parseAndRenderPDFPage(file, pageNum, pdfDoc);
+          extractedText += `\n--- Página ${pageNum} ---\n${pdfTextItemsToLines(page.textItems).join('\n')}`;
+        }
+
+        const paginas = parseApuracaoTributos(extractedText);
+        if (paginas.length === 0) {
+          setFolhaEncargosMsg('❌ Nenhuma competência encontrada. Confira se o PDF é o «Apuração de Tributos Federais».');
+          return;
+        }
+
+        const novasLinhas = encargosEmpresaParaLinhasFolha(paginas);
+        if (novasLinhas.length === 0) {
+          setFolhaEncargosMsg('❌ Nenhum encargo da empresa no PDF — só há retenção de segurado.');
+          return;
+        }
+
+        // Id estável por competência + encargo: reimportar o mesmo PDF atualiza, não duplica.
+        const novosIds = new Set(novasLinhas.map((l) => l.id));
+        const merged = [
+          ...folhaRelatorio.filter((r) => !novosIds.has(r.id)),
+          ...novasLinhas,
+        ];
+        setFolhaRelatorio(merged);
+        writeManagerDataNow(selectedCompany, 'folhaRelatorio', merged);
+        void flushPersistenceAfterCriticalWrite();
+
+        const total = novasLinhas.reduce((soma, l) => soma + l.credito, 0);
+        const competencias = paginas.map((p) => p.competencia).join(', ');
+        setFolhaEncargosMsg(
+          `✅ ${novasLinhas.length} encargo(s) de ${paginas.length} competência(s) · ${competencias} · ` +
+            `Total ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+        );
+      } catch (err) {
+        setFolhaEncargosMsg(`❌ Erro ao ler o PDF: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setFolhaEncargosProcessando(false);
+      }
+    },
+    [selectedCompany, folhaRelatorio],
+  );
+
   const handleFolhaDominioFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -690,6 +805,7 @@ export default function ManagerModule({
               debito,
               credito,
               tipo: lance.tipo,
+              tipoCalculo: result.tipoCalculo,
             });
           }
         }
@@ -700,6 +816,22 @@ export default function ManagerModule({
         setFolhaRelatorio(merged);
         writeManagerDataNow(selectedCompany, 'folhaRelatorio', merged);
         void flushPersistenceAfterCriticalWrite();
+
+        // O Resumo emitido com "Folha Mensal e Complementar"/"Todos" soma a rescisão dentro
+        // das rubricas comuns de salário. O valor do desligado não é separável a partir dele,
+        // e sem este aviso "Salários a pagar" fecha acima do líquido real sem explicação.
+        const agregado = results.find((r) => r.agregaFolhaERescisao);
+        const temRescisao = novasLinhas.some((l) => /RESCIS/i.test(l.description));
+        if (agregado && temRescisao) {
+          setFolhaRelatorioAviso(
+            `Este relatório foi emitido como «${agregado.tipoCalculo}» e contém rescisão: os valores do ` +
+              'empregado desligado estão somados dentro das rubricas comuns (saldo de salário, DSR), sem ' +
+              'como separar. Para as contas fecharem por natureza, reemita o Resumo por tipo de cálculo — ' +
+              'um só "Folha Mensal" e outro só "Rescisão" — e importe os dois.',
+          );
+        } else {
+          setFolhaRelatorioAviso('');
+        }
 
         const msgParts = [
           `✅ ${novasLinhas.length} lançamento(s) importados`,
@@ -720,34 +852,66 @@ export default function ManagerModule({
   );
 
   const handleMandarFolhaParaBalancete = useCallback(() => {
-    const hasData = folhaRelatorio.length > 0 || folhaPayroll.length > 0;
-    if (!hasData) {
-      alert('Nenhum dado de folha importado para enviar ao balancete.');
+    if (folhaRelatorio.length === 0) {
+      alert('Nenhum lançamento de folha importado.');
+      return;
+    }
+    if (folhaRegras.length === 0) {
+      alert('Configure as regras de contas da folha antes de enviar ao balancete.');
       return;
     }
     setPeriodoModalFolhaOpen(true);
-  }, [folhaPayroll.length, folhaRelatorio.length]);
+  }, [folhaRelatorio.length, folhaRegras.length]);
 
-  const handlePeriodoFolhaConfirmado = useCallback((periodo: BalancetePeriodo) => {
-    setPeriodoModalFolhaOpen(false);
-    try {
-      const { gerados, pendencias } = postFolhaNoRazao(selectedCompany);
-      setRazaoRows(readManagerData<VisionBalanceteRow>(selectedCompany, 'razao'));
-      void flushPersistenceAfterCriticalWrite();
-      if (pendencias.length && gerados <= 0) {
-        alert(pendencias.slice(0, 5).join('\n'));
-        return;
+  /**
+   * Publica no balancete EXATAMENTE as partidas que a aba Totais por Conta mostra.
+   *
+   * Antes isso passava por um caminho paralelo (`postFolhaNoRazao`), que reconhecia a rubrica
+   * por palavras-chave fixas e caía num par de contas legado — o balancete podia receber algo
+   * diferente do que a tela exibia, e o período escolhido no modal era ignorado.
+   */
+  const handlePeriodoFolhaConfirmado = useCallback(
+    (periodo: BalancetePeriodo) => {
+      setPeriodoModalFolhaOpen(false);
+      try {
+        const isoParaBr = (iso: string) => iso.split('-').reverse().join('/');
+        const de = isoParaBr(periodo.dataInicio);
+        const ate = isoParaBr(periodo.dataFim);
+
+        const partidas = buildFolhaPartidas(
+          folhaRelatorio,
+          folhaRegras,
+          { de, ate },
+          planoClassificacaoPorConta,
+        );
+
+        if (partidas.length === 0) {
+          alert(
+            `Nenhum lançamento com regra de conta entre ${de} e ${ate}.\n\n` +
+              'Confira o período e as regras cadastradas na aba Folha.',
+          );
+          return;
+        }
+
+        const merged = normalizeRazaoImport(mergeFolhaPartidasComRazao(razaoRows, partidas));
+        setRazaoRows(merged);
+        writeManagerDataNow(selectedCompany, 'razao', merged);
+        void flushPersistenceAfterCriticalWrite();
+
+        // Cada lançamento tem duas pernas; o que interessa contar é o lançamento.
+        const lancamentos = partidas.length / 2;
+        alert(
+          `${lancamentos} lançamento(s) da folha enviados ao balancete.\n` +
+            `Período: ${de} até ${ate}\n\n` +
+            'Reenviar a mesma folha substitui estes lançamentos, não duplica.\n' +
+            'Abra a aba Balancete para conferir.',
+        );
+      } catch (err) {
+        alert(err instanceof Error ? err.message : 'Falha ao enviar para o balancete.');
       }
-      const periodoStr = `${periodo.dataInicio.split('-').reverse().join('/')} até ${periodo.dataFim.split('-').reverse().join('/')}`;
-      alert(
-        gerados > 0
-          ? `${gerados} lançamento(s) da folha enviados ao balancete.\nPeríodo: ${periodoStr}\n\nAbra a aba Balancete para conferir.`
-          : 'Nada novo para enviar — já estavam no balancete (ou configure as contas).',
-      );
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Falha ao enviar para o balancete.');
-    }
-  }, [selectedCompany]);
+    },
+    [folhaRelatorio, folhaRegras, planoClassificacaoPorConta, razaoRows, selectedCompany],
+  );
 
   useEffect(() => {
     const onFolha = (ev: Event) => {
@@ -1917,52 +2081,72 @@ export default function ManagerModule({
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const folhaTotaisPorConta = useMemo(() => {
-    const dateFrom = parseBrDate(folhaTotaisDe);
-    const dateTo = parseBrDate(folhaTotaisAte);
+  /**
+   * Partidas da folha geradas pelas regras cadastradas — débito e crédito de cada lançamento.
+   *
+   * É a fonte tanto do "Totais por Conta" quanto do razão que abre ao clicar numa conta, para
+   * que o detalhe sempre feche com o total. Não usa o razão do balancete de propósito: as
+   * contas da folha também recebem movimento da conciliação bancária, que não pertence a esta
+   * aba, e enquanto a folha não é publicada no balancete o razão não tem linha nenhuma dela.
+   */
+  const folhaPartidas = useMemo(
+    () =>
+      buildFolhaPartidas(
+        folhaRelatorio,
+        folhaRegras,
+        { de: folhaTotaisData, ate: folhaTotaisData },
+        planoClassificacaoPorConta,
+      ),
+    [folhaRelatorio, folhaRegras, folhaTotaisData, planoClassificacaoPorConta],
+  );
 
-    const totais = new Map<string, { conta: string; nomeConta: string; debito: number; credito: number }>();
-
-    const planoNomeLookup = new Map<string, string>();
-    for (const a of planoContas) {
-      if (a.codigoReduzido) planoNomeLookup.set(a.codigoReduzido, a.name);
-      if (a.code) planoNomeLookup.set(a.code, a.name);
-    }
-
-    const getNome = (codigo: string) => planoNomeLookup.get(codigo) ?? codigo;
-
-    const ensureConta = (codigo: string) => {
-      if (!totais.has(codigo)) {
-        totais.set(codigo, { conta: codigo, nomeConta: getNome(codigo), debito: 0, credito: 0 });
-      }
-      return totais.get(codigo)!;
-    };
-
+  /**
+   * Datas que realmente existem na folha importada (uma por competência), da mais recente para
+   * a mais antiga. O filtro de Totais por Conta é um seletor dessas datas em vez de dois campos
+   * livres: digitar data à mão só permitia errar — ou o formato, ou um dia sem lançamento.
+   */
+  const folhaDatasDisponiveis = useMemo(() => {
+    const vistas = new Set<string>();
     for (const row of folhaRelatorio) {
-      // Filtro de período — row.date está em dd/mm/yyyy
-      if (dateFrom || dateTo) {
-        const rowDate = parseBrDate(row.date);
-        if (!rowDate) continue;
-        if (dateFrom && rowDate < dateFrom) continue;
-        if (dateTo && rowDate > dateTo) continue;
-      }
-
-      const descNorm = normalizeExtratoMatchText(row.description);
-      const regra = folhaRegras.find((r) => {
-        const rNorm = normalizeExtratoMatchText(r.descricao);
-        return rNorm && descNorm.includes(rNorm);
-      });
-      if (!regra) continue;
-      const valor = row.debito > 0 ? row.debito : row.credito;
-      if (valor <= 0) continue;
-      ensureConta(regra.contaDebito).debito += valor;
-      ensureConta(regra.contaCredito).credito += valor;
+      const d = String(row.date ?? '').trim();
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(d)) vistas.add(d);
     }
+    const chave = (d: string) => `${d.slice(6, 10)}${d.slice(3, 5)}${d.slice(0, 2)}`;
+    return [...vistas].sort((a, b) => chave(b).localeCompare(chave(a)));
+  }, [folhaRelatorio]);
 
-    return Array.from(totais.values())
-      .map((t) => ({ ...t, saldo: t.debito - t.credito }))
-      .sort((a, b) => a.conta.localeCompare(b.conta));
-  }, [folhaRelatorio, folhaRegras, planoContas, folhaTotaisDe, folhaTotaisAte]);
+  const folhaTotaisPorConta = useMemo(
+    () => buildFolhaTotaisPorConta(folhaPartidas, planoNomePorConta),
+    [folhaPartidas, planoNomePorConta],
+  );
+
+  /** Nome da conta sintética do plano por classificação ("2" → "PASSIVO", "3.2" → "DESPESAS…"). */
+  const planoNomeDoGrupo = useCallback(
+    (classificacao: string) => {
+      for (const a of planoContas) {
+        if (a.code === classificacao) return a.name;
+      }
+      return '';
+    },
+    [planoContas],
+  );
+
+  /**
+   * Totais divididos em Ativo / Passivo / Despesas… A natureza sai dos nomes dos grupos do
+   * próprio plano, não de uma convenção fixa de dígito — neste plano o grupo 3 é o resultado
+   * do exercício, e a regra genérica classificaria a despesa com pessoal como patrimônio.
+   */
+  const folhaTotaisSecoes = useMemo(
+    () => agruparFolhaTotaisPorNatureza(folhaTotaisPorConta, planoNomeDoGrupo),
+    [folhaTotaisPorConta, planoNomeDoGrupo],
+  );
+
+
+  useEffect(() => {
+    // Reimportar a folha pode remover a competência que estava filtrada — sem isso a aba
+    // ficaria vazia sem explicação, filtrando por uma data que não existe mais.
+    if (folhaTotaisData && !folhaDatasDisponiveis.includes(folhaTotaisData)) setFolhaTotaisData('');
+  }, [folhaDatasDisponiveis, folhaTotaisData]);
 
   // Render subtabs
   const tabs: { id: ManagerSubTab; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
@@ -3912,6 +4096,20 @@ export default function ManagerModule({
                               <Settings size={13} className="text-amber-600" />
                               Regras
                             </button>
+                            <button
+                              type="button"
+                              onClick={handleMandarFolhaParaBalancete}
+                              disabled={folhaRelatorio.length === 0 || folhaRegras.length === 0}
+                              className="technical-button-primary text-[10px] px-3 py-1.5 flex items-center gap-1.5 font-bold disabled:opacity-40"
+                              title={
+                                folhaRegras.length === 0
+                                  ? 'Cadastre as regras de contas da folha primeiro'
+                                  : 'Publica os lançamentos da folha no balancete/razão, por período'
+                              }
+                            >
+                              <Upload size={13} />
+                              Mandar para o Balancete
+                            </button>
 
                           </div>
                         </div>
@@ -3929,10 +4127,46 @@ export default function ManagerModule({
                         aria-label="Upload PDF Domínio — Folha de Pagamento"
                         data-testid="ingest-folha-dominio-pdf-btn"
                       />
+                      <input
+                        ref={folhaEncargosInputRef}
+                        type="file"
+                        accept=".pdf"
+                        className="hidden"
+                        onChange={handleFolhaEncargosFileChange}
+                        aria-label="Upload PDF Domínio — Apuração de Tributos Federais"
+                        data-testid="ingest-folha-encargos-pdf-btn"
+                      />
                       {folhaPdfMsg && (
                         <p className="text-[10px] font-bold font-mono px-1 py-1 border border-brand-border bg-brand-sidebar/20">
                           {folhaPdfMsg}
                         </p>
+                      )}
+                      {folhaEncargosMsg && (
+                        <p className="text-[10px] font-bold font-mono px-1 py-1 border border-brand-border bg-brand-sidebar/20">
+                          {folhaEncargosMsg}
+                        </p>
+                      )}
+
+                      {folhaRelatorioAviso && (
+                        <div className="flex items-start gap-2 px-2 py-2 border-2 border-amber-500 bg-amber-50">
+                          <AlertTriangle size={13} className="text-amber-700 shrink-0 mt-0.5" aria-hidden />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[9px] font-black uppercase tracking-wider text-amber-900">
+                              Relatório mistura folha mensal e rescisão
+                            </p>
+                            <p className="text-[9px] text-brand-text/75 leading-relaxed mt-0.5">
+                              {folhaRelatorioAviso}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setFolhaRelatorioAviso('')}
+                            className="technical-button text-[8px] py-0.5 px-1.5 shrink-0"
+                            aria-label="Fechar aviso"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
                       )}
 
                       {/* Recortar PDF da Folha — junto com "Importar PDF Domínio" */}
@@ -3942,10 +4176,13 @@ export default function ManagerModule({
                         selectedCompany={selectedCompany}
                         ingestionMode="pdfOnly"
                         extraTopAction={{
-                          label: folhaPdfProcessando ? 'Lendo PDF…' : 'Importar PDF Domínio',
-                          onClick: () => folhaDominioInputRef.current?.click(),
-                          disabled: folhaPdfProcessando,
-                          title: 'PDF exportado pelo Sistema Domínio (Resumo da Folha) — importa direto para a tabela',
+                          label:
+                            folhaPdfProcessando || folhaEncargosProcessando
+                              ? 'Lendo PDF…'
+                              : 'Importar PDF Domínio',
+                          onClick: () => setFolhaLayoutModalOpen(true),
+                          disabled: folhaPdfProcessando || folhaEncargosProcessando,
+                          title: 'PDF exportado pelo Sistema Domínio — escolha o layout do relatório',
                         }}
                         onImport={(newItems) => {
                           const prefix = folhaVariantDescriptionPrefix(folhaPdfVariant);
@@ -3978,41 +4215,29 @@ export default function ManagerModule({
                           Saldo líquido por conta contábil (débito − crédito) considerando as regras configuradas
                         </p>
                       </div>
-                      {/* Filtro de período */}
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        <span className="text-[9px] font-black uppercase text-brand-text/50 tracking-widest">Período</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="text"
-                            value={folhaTotaisDe}
-                            onChange={(e) => setFolhaTotaisDe(e.target.value)}
-                            placeholder="dd/mm/aaaa"
-                            maxLength={10}
-                            className="h-[26px] w-[96px] text-[9px] font-mono font-bold uppercase border border-brand-border bg-white px-2 tracking-wider placeholder:opacity-30"
-                            aria-label="Data inicial do filtro de totais"
-                          />
-                          <span className="text-[9px] font-black text-brand-text/40">até</span>
-                          <input
-                            type="text"
-                            value={folhaTotaisAte}
-                            onChange={(e) => setFolhaTotaisAte(e.target.value)}
-                            placeholder="dd/mm/aaaa"
-                            maxLength={10}
-                            className="h-[26px] w-[96px] text-[9px] font-mono font-bold uppercase border border-brand-border bg-white px-2 tracking-wider placeholder:opacity-30"
-                            aria-label="Data final do filtro de totais"
-                          />
-                          {(folhaTotaisDe || folhaTotaisAte) && (
-                            <button
-                              type="button"
-                              onClick={() => { setFolhaTotaisDe(''); setFolhaTotaisAte(''); }}
-                              className="h-[26px] px-2 text-[9px] font-bold border border-brand-border text-brand-text/50 hover:text-red-700 hover:border-red-300"
-                              title="Limpar filtro de período"
-                            >
-                              ✕
-                            </button>
-                          )}
+                      {/* Filtro de competência — só datas que existem na folha */}
+                      {folhaDatasDisponiveis.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <span className="text-[9px] font-black uppercase text-brand-text/50 tracking-widest">
+                            Competência
+                          </span>
+                          <select
+                            value={folhaTotaisData}
+                            onChange={(e) => setFolhaTotaisData(e.target.value)}
+                            className="h-[26px] text-[9px] font-mono font-bold uppercase border border-brand-border bg-white px-2 tracking-wider"
+                            aria-label="Competência dos totais da folha"
+                          >
+                            <option value="">
+                              Todas ({folhaDatasDisponiveis.length})
+                            </option>
+                            {folhaDatasDisponiveis.map((d) => (
+                              <option key={d} value={d}>
+                                {d}
+                              </option>
+                            ))}
+                          </select>
                         </div>
-                      </div>
+                      )}
                     </div>
                     {folhaTotaisPorConta.length === 0 ? (
                       <div className="py-12 text-center text-[10px] font-bold text-brand-text/40 uppercase tracking-widest">
@@ -4020,8 +4245,8 @@ export default function ManagerModule({
                           ? 'Nenhum lançamento importado na folha.'
                           : folhaRegras.length === 0
                           ? 'Configure as regras de contas para ver os totais.'
-                          : (folhaTotaisDe || folhaTotaisAte)
-                          ? 'Nenhum lançamento no período informado com regra correspondente.'
+                          : folhaTotaisData
+                          ? `Nenhum lançamento com regra de conta em ${folhaTotaisData}.`
                           : 'Nenhum lançamento com regra de conta correspondente.'}
                       </div>
                     ) : (
@@ -4037,7 +4262,24 @@ export default function ManagerModule({
                             </tr>
                           </thead>
                           <tbody className="font-mono text-[11px] divide-y divide-brand-border/10">
-                            {folhaTotaisPorConta.map((t) => (
+                            {folhaTotaisSecoes.map((secao) => (
+                              <Fragment key={secao.id}>
+                                <tr className="bg-brand-sidebar/40 border-y border-brand-border/30">
+                                  <td
+                                    className="px-4 py-2 text-[10px] font-black uppercase tracking-widest text-brand-text/70"
+                                    colSpan={2}
+                                  >
+                                    {secao.titulo}
+                                  </td>
+                                  <td className="px-4 py-2 text-right text-[10px] font-bold text-rose-700/70">
+                                    {secao.debito > 0 ? formatCurrency(secao.debito) : '—'}
+                                  </td>
+                                  <td className="px-4 py-2 text-right text-[10px] font-bold text-emerald-700/70">
+                                    {secao.credito > 0 ? formatCurrency(secao.credito) : '—'}
+                                  </td>
+                                  <td className="px-4 py-2" />
+                                </tr>
+                                {secao.contas.map((t) => (
                               <tr key={t.conta} className="technical-grid-row">
                                 <td className="px-4 py-3 border-r border-brand-border/10 font-bold text-brand-text">
                                   <button
@@ -4059,6 +4301,8 @@ export default function ManagerModule({
                                   {t.saldo !== 0 ? formatCurrency(Math.abs(t.saldo)) + (t.saldo > 0 ? ' D' : ' C') : '—'}
                                 </td>
                               </tr>
+                                ))}
+                              </Fragment>
                             ))}
                             {/* Linha de totais */}
                             <tr className="bg-brand-sidebar/20 font-bold border-t border-brand-border/30">
@@ -4458,29 +4702,109 @@ export default function ManagerModule({
         </div>
       )}
 
+      {/* Escolha do layout do PDF do Domínio a importar na Folha */}
+      {folhaLayoutModalOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="technical-panel w-full max-w-3xl max-h-[88vh] bg-brand-bg shadow-[6px_6px_0_0_#141414] flex flex-col">
+            <div className="px-4 py-3 border-b border-brand-border bg-brand-sidebar/30 flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-[11px] font-black uppercase tracking-widest">Importar PDF do Domínio</h2>
+                <p className="text-[9px] font-bold uppercase opacity-50 mt-0.5">
+                  Confira o layout e escolha o relatório
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFolhaLayoutModalOpen(false)}
+                className="technical-button p-1"
+                aria-label="Fechar"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="p-4 grid gap-3 sm:grid-cols-2 overflow-y-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  setFolhaLayoutModalOpen(false);
+                  folhaDominioInputRef.current?.click();
+                }}
+                className="text-left border border-brand-border bg-white hover:border-brand-text hover:shadow-[3px_3px_0_0_#141414] transition-all flex flex-col"
+              >
+                <div className="px-3 py-2 border-b border-brand-border/50 bg-brand-sidebar/20 flex items-center gap-2">
+                  <FileText size={13} className="shrink-0 opacity-60" aria-hidden />
+                  <p className="text-[10px] font-black uppercase tracking-widest">Resumo da Folha</p>
+                </div>
+                <div className="p-2 bg-brand-sidebar/10">
+                  <LayoutResumoFolha />
+                </div>
+                <p className="text-[9px] text-brand-text/65 leading-relaxed p-3 border-t border-brand-border/40">
+                  Proventos, descontos e informativas por rubrica, uma competência por página. É a
+                  folha do empregado: salários, férias, 13º, INSS retido, consignado, FGTS.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setFolhaLayoutModalOpen(false);
+                  folhaEncargosInputRef.current?.click();
+                }}
+                className="text-left border border-brand-border bg-white hover:border-brand-text hover:shadow-[3px_3px_0_0_#141414] transition-all flex flex-col"
+              >
+                <div className="px-3 py-2 border-b border-brand-border/50 bg-brand-sidebar/20 flex items-center gap-2">
+                  <FileText size={13} className="shrink-0 opacity-60" aria-hidden />
+                  <p className="text-[10px] font-black uppercase tracking-widest">
+                    Apuração de Tributos Federais
+                  </p>
+                </div>
+                <div className="p-2 bg-brand-sidebar/10">
+                  <LayoutApuracaoTributos />
+                </div>
+                <p className="text-[9px] text-brand-text/65 leading-relaxed p-3 border-t border-brand-border/40">
+                  Encargos da EMPRESA sobre a folha — INSS patronal/RAT e PIS sobre a folha — pela
+                  coluna «Saldo a recolher». O INSS dos segurados fica de fora: já vem no Resumo
+                  da Folha.
+                </p>
+              </button>
+            </div>
+
+            <p className="px-4 pb-3 text-[8px] text-brand-text/45 leading-relaxed shrink-0">
+              As miniaturas reproduzem só a estrutura do relatório; empresa, CNPJ e valores estão
+              tarjados.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Modal Razão — aberto ao clicar em uma conta da aba Totais por Conta (Folha) */}
       {folhaTotaisRazaoOpen && folhaTotaisRazaoConta && (
         <RazaoContaLancamentosModal
           open={folhaTotaisRazaoOpen}
           onClose={() => setFolhaTotaisRazaoOpen(false)}
-          razaoRows={razaoRows}
+          razaoRows={folhaPartidas}
           planoRows={accountPlansToVisionPlano(planoContas)}
           conta={{
             chave: folhaTotaisRazaoConta.conta,
             codigo: folhaTotaisRazaoConta.conta,
-            // Folha só tem código de conta "chapado" (sem classificação hierárquica) — deixar
-            // vazio aqui. Repetir o código também em `classificacao` fazia o modo "codigo" do
-            // modal (RazaoContaLancamentosModal) achar que não tinha um código reduzido de
-            // verdade e sempre voltar 0 lançamentos, mesmo com a conta tendo movimento.
-            classificacao: '',
+            // Classificação hierárquica do plano ("2.1.3.01.00001"), NÃO o código reduzido: é
+            // dela que o modal deriva a natureza da conta, e sem ela "Salários a pagar" saía
+            // como devedora com todas as linhas marcadas como saldo invertido. Repetir aqui o
+            // código reduzido é que quebrava o modo "codigo" — a classificação real não.
+            classificacao: planoClassificacaoPorConta(folhaTotaisRazaoConta.conta),
             nome: folhaTotaisRazaoConta.nomeConta,
             tipo: 'A',
           }}
           modo="codigo"
-          periodoDe={balancetePeriodoConfirmado?.de ?? ''}
-          periodoAte={balancetePeriodoConfirmado?.ate ?? ''}
+          // O período já é aplicado ao gerar as partidas (filtros da aba Totais por Conta).
+          periodoDe=""
+          periodoAte=""
           surface="contabilfacil"
-          onRazaoRowsChange={setRazaoRows}
+          // Sem `onRazaoRowsChange`: estas partidas são derivadas do relatório da folha + regras,
+          // não linhas gravadas no razão. Editá-las aqui não teria onde persistir — o ajuste é
+          // feito na regra ou no lançamento da folha, e o razão só recebe tudo em
+          // "Mandar para o Balancete".
         />
       )}
 

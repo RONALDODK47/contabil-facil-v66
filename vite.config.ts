@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
 import type { Plugin, PluginOption, ProxyOptions } from 'vite';
-import { defineConfig } from 'vite';
+import { createLogger, defineConfig } from 'vite';
 import {agentApiDevFallback} from './scripts/vite-agent-api-fallback.mjs';
 import {viteDevBackendPlugin} from './scripts/vite-dev-backend-plugin.mjs';
 
@@ -94,6 +94,25 @@ function quietProxyErrors(label: string) {
   };
 }
 
+/**
+ * Logger que suprime o erro de proxy do Vite.
+ *
+ * `quietProxyErrors` já imprime uma linha curta e legível ("[vite-proxy] brasilapi
+ * indisponível"), mas o handler interno do Vite continua ativo e despeja em seguida um
+ * `http proxy error` com AggregateError/stack para CADA requisição. Numa rede que bloqueia
+ * a Brasil API, isso enterra o resto do log de boot em ruído sobre uma falha que o app já
+ * trata com fallback local.
+ */
+function quietViteLogger() {
+  const logger = createLogger();
+  const errorOriginal = logger.error.bind(logger);
+  logger.error = (msg, options) => {
+    if (typeof msg === 'string' && msg.includes('http proxy error')) return;
+    errorOriginal(msg, options);
+  };
+  return logger;
+}
+
 /** Dev / preview: API fiscal local + sÃ©ries BCB (evita CORS no browser). */
 const devPreviewProxy: Record<string, ProxyOptions> = {
   '/api/fiscal-nfe': {
@@ -135,6 +154,7 @@ const devPreviewProxy: Record<string, ProxyOptions> = {
 
 export default defineConfig(() => ({
     base: resolveAppBasePath(),
+    customLogger: quietViteLogger(),
     plugins: [
       react(),
       tailwindcss(),

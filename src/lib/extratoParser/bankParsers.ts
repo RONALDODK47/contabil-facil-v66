@@ -2191,6 +2191,8 @@ export function parseCresolWords(pages: PdfWord[][]): {
 
 const CAIXA_GER_DATE_RE = /^(\d{2})\/(\d{2})\/(\d{4})$/;
 const CAIXA_GER_MONEY_RE = /^(\d{1,3}(?:\.\d{3})*,\d{2})\s*([CD])$/i;
+/** Valor sem o indicador de natureza — em impressões digitalizadas ele vem em outro token. */
+const CAIXA_GER_MONEY_ONLY_RE = /^(\d{1,3}(?:\.\d{3})*,\d{2})$/;
 const CAIXA_GER_ROW_TOLERANCE = 3;
 
 // Colunas do PDF (pontos, origem à esquerda): Data ~40, Nr.Doc ~102,
@@ -2204,7 +2206,10 @@ function caixaGerMoneyToNumber(raw: string): number {
   return parseFloat(raw.replace(/\./g, '').replace(',', '.')) || 0;
 }
 
-function extractCaixaGerenciadorMetadata(pages: PdfWord[][]): BankStatementMetadata | null {
+function extractCaixaGerenciadorMetadata(
+  pages: PdfWord[][],
+  transactions: ExtratoLine[] = [],
+): BankStatementMetadata | null {
   const joined = pages.flat().map((w) => w.str).join(' ');
 
   // "Conta: 1827 | 1292 | 000579015952-0" → usa o número da conta (último campo).
@@ -2215,9 +2220,24 @@ function extractCaixaGerenciadorMetadata(pages: PdfWord[][]): BankStatementMetad
 
   let period: string | null = urlMatch ? `${urlMatch[2]}/${urlMatch[3]}` : null;
   if (!period) {
-    const mesMatch = joined.match(/M[êe]s:\s*([A-Za-zçÇ]+)\/(\d{4})/);
+    // "Mês:" sai como "Mis :", "Més :" etc. em impressão digitalizada — aceita a variação da
+    // vogal e o espaço antes dos dois-pontos.
+    const mesMatch = joined.match(/\bM[êeéiè]s\s*:\s*([A-Za-zçÇ]+)\s*\/\s*(\d{4})/i);
     const mm = mesMatch ? CAIXA_APP_MONTHS[mesMatch[1].toLowerCase()] : undefined;
     if (mesMatch && mm) period = `${mm}/${mesMatch[2]}`;
+  }
+  if (!period) {
+    // Último recurso: a competência dos próprios lançamentos. Bem mais confiável do que um
+    // padrão fixo — o cabeçalho pode estar ilegível, mas as datas das linhas não estão.
+    const contagem = new Map<string, number>();
+    for (const t of transactions) {
+      const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(t.date ?? ''));
+      if (!m) continue;
+      const chave = `${m[2]}/${m[1]}`;
+      contagem.set(chave, (contagem.get(chave) ?? 0) + 1);
+    }
+    const maisFrequente = [...contagem.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (maisFrequente) period = maisFrequente[0];
   }
 
   return {
@@ -2265,22 +2285,49 @@ export function parseCaixaGerenciadorWords(pages: PdfWord[][]): {
       const historicoWords: string[] = [];
       let valorAmount: number | null = null;
       let saldoAmount: number | null = null;
+      /** Índices já usados como indicador C/D de um valor anterior. */
+      const consumidos = new Set<number>();
 
-      for (const w of sorted) {
-        if (w === dateWord) continue;
+      const guardaValor = (x: number, signed: number) => {
+        if (x >= CAIXA_GER_VALOR_SALDO_SPLIT_X) saldoAmount = signed;
+        else valorAmount = signed;
+      };
+
+      for (let i = 0; i < sorted.length; i++) {
+        const w = sorted[i]!;
+        if (w === dateWord || consumidos.has(i)) continue;
         const str = w.str.trim();
         if (!str) continue;
 
         if (caixaInRange(w.x0, CAIXA_GER_COL_DOC)) continue; // Nr. Doc não entra na descrição
 
-        const money = CAIXA_GER_MONEY_RE.exec(str.replace('С', 'C').replace('с', 'c'));
+        const normalizado = str.replace('С', 'C').replace('с', 'c');
+
+        const money = CAIXA_GER_MONEY_RE.exec(normalizado);
         if (money) {
           const value = caixaGerMoneyToNumber(money[1]);
-          const signed = caixaNormalizeSign(money[2]) === 'D' ? -value : value;
-          if (w.x0 >= CAIXA_GER_VALOR_SALDO_SPLIT_X) saldoAmount = signed;
-          else valorAmount = signed;
+          guardaValor(w.x0, caixaNormalizeSign(money[2]) === 'D' ? -value : value);
           continue;
         }
+
+        // Valor e indicador em tokens separados ("17,63" seguido de "C"), como sai das
+        // impressões digitalizadas do Gerenciador.
+        const somenteValor = CAIXA_GER_MONEY_ONLY_RE.exec(normalizado);
+        if (somenteValor) {
+          const proximo = sorted[i + 1];
+          const sinal = proximo ? caixaNormalizeSign(proximo.str) : null;
+          // Sem indicador não dá para saber se é débito ou crédito: melhor ignorar o valor do
+          // que arriscar inverter o lançamento.
+          if (sinal) {
+            const value = caixaGerMoneyToNumber(somenteValor[1]);
+            guardaValor(w.x0, sinal === 'D' ? -value : value);
+            consumidos.add(i + 1);
+          }
+          continue;
+        }
+
+        // Um "C"/"D" solto que não seguiu um valor não é histórico
+        if (caixaNormalizeSign(str)) continue;
 
         if (caixaInRange(w.x0, CAIXA_GER_COL_HISTORICO)) historicoWords.push(str);
       }
@@ -2301,5 +2348,5 @@ export function parseCaixaGerenciadorWords(pages: PdfWord[][]): {
     }
   }
 
-  return { transactions, metadata: extractCaixaGerenciadorMetadata(pages) };
+  return { transactions, metadata: extractCaixaGerenciadorMetadata(pages, transactions) };
 }

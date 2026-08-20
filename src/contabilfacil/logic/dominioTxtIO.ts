@@ -53,6 +53,12 @@ export type FolhaRelatorioImportRow = {
   credito: number;
   /** Tipo de rubrica conforme seção do PDF: PROVENTOS, DESCONTOS ou INFORMATIVA. */
   tipo?: 'PROVENTOS' | 'DESCONTOS' | 'INFORMATIVA';
+  /**
+   * Cabeçalho "Cálculo:" do relatório de origem — "Folha Mensal", "Rescisão", "Folha Mensal e
+   * Complementar". Num relatório só de rescisão, TODA rubrica é verba rescisória, mesmo as que
+   * não têm "rescisão" no nome (saldo de salário, DSR).
+   */
+  tipoCalculo?: string;
 };
 
 export type ExtratoExportRow = {

@@ -8,6 +8,21 @@ export const YEAR_TO = 2035;
 
 const BRASIL_API_BASES = ['/api/brasilapi', 'https://brasilapi.com.br'] as const;
 
+/**
+ * Teto de espera por tentativa. O proxy do Vite já corta em 8s, mas a chamada direta ao
+ * brasilapi.com.br não tem limite próprio: em rede que bloqueia o host, ela fica pendurada
+ * até o timeout do sistema operacional.
+ */
+const FETCH_TIMEOUT_MS = 6000;
+
+function abortSignalComTimeout(ms: number): AbortSignal | undefined {
+  // AbortSignal.timeout não existe em browsers antigos nem em alguns runtimes de teste.
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  return undefined;
+}
+
 export type BankingCalendarSource = 'computed' | 'api' | 'api+cache' | 'cache';
 
 let lastCalendarSource: BankingCalendarSource = 'computed';
@@ -60,6 +75,7 @@ export async function fetchNationalHolidaysForYear(year: number): Promise<string
         method: 'GET',
         headers: { Accept: 'application/json' },
         cache: 'no-store',
+        signal: abortSignalComTimeout(FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         lastErr = new Error(`HTTP ${res.status}`);
@@ -149,12 +165,27 @@ export async function hydrateBankingCalendarFromRemote(
   hydrateBankingCalendarFromStorage();
   const years: number[] = [];
   for (let y = yearFrom; y <= yearTo; y++) years.push(y);
+  if (years.length === 0) return false;
 
   const cache: ApiCachePayload = { updatedAt: new Date().toISOString(), years: {} };
   let fetched = 0;
 
+  // Sonda UM ano antes de disparar o lote. São 18 anos × 2 endpoints (proxy + direto): quando
+  // a Brasil API está inacessível — rede corporativa, offline, host fora do ar — o disparo em
+  // paralelo pendura 36 requisições até o timeout e enche o terminal de erro de proxy, sem
+  // nenhum ganho: o calendário calculado localmente já está carregado e é o suficiente.
+  const [anoSonda, ...demais] = years;
+  try {
+    const dates = await fetchNationalHolidaysForYear(anoSonda!);
+    cache.years[String(anoSonda)] = dates;
+    mergeBankingHolidays(dates);
+    fetched += 1;
+  } catch {
+    return false;
+  }
+
   await Promise.all(
-    years.map(async (year) => {
+    demais.map(async (year) => {
       try {
         const dates = await fetchNationalHolidaysForYear(year);
         cache.years[String(year)] = dates;
